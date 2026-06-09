@@ -307,15 +307,14 @@ export function getCoverArtUrl(id, size = 512) {
 // instead of its built-in http.get.stream (which returns spurious 522s
 // against the Cloudflare-fronted Navidrome origin).
 //
-// format=mp3 asks Navidrome to transcode to MP3 on the way out. This is
-// preferable to format=raw for broadcast: raw serves the original file
-// (FLAC/AAC/m4a, often 30-60 MB) which Liquidsoap must fully curl-download
-// before it can play, causing timeout-induced gaps on large files. MP3 is
-// streamed progressively and small enough that curl never times out.
-// The one-generation quality loss is irrelevant — Liquidsoap re-encodes to
-// MP3 for Icecast output anyway.
+// format=mp3&maxBitRate=128 asks Navidrome to transcode to 128 kbps MP3 —
+// exactly the bitrate Icecast broadcasts at. Liquidsoap still decodes to
+// PCM internally for mixing (crossfades, voice duck) but receives a small
+// progressive stream that never curl-times-out, vs format=raw which serves
+// the original file (FLAC/AAC, 30-60 MB+) causing audible gaps when the
+// download times out before the next track starts.
 export function getStreamUrl(songId) {
-  return `subhttp:${buildUrl('stream', { id: songId, format: 'mp3' })}`;
+  return `subhttp:${buildUrl('stream', { id: songId, format: 'mp3', maxBitRate: 128 })}`;
 }
 
 // Plain HTTP stream URL (no `subhttp:` prefix) with auth baked into the query
