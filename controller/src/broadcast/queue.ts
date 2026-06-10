@@ -714,6 +714,21 @@ class Queue {
     return out;
   }
 
+  // Core artist key(s) for the track that's currently playing and the one
+  // immediately before it — a hard, never-relaxed "don't repeat this artist
+  // back-to-back" floor, independent of the rolling recentArtists window
+  // (which the picker's recency cascade is allowed to relax under scarcity).
+  justPlayedArtistKeys(): Set<string> {
+    const out = new Set<string>();
+    const add = (artist: string | null | undefined) => {
+      const core = coreArtistKey({ artist });
+      if (core) out.add(core);
+    };
+    add(this.current?.track?.artist);
+    add(this.history[0]?.track?.artist);
+    return out;
+  }
+
   // Poll now-playing.json every 1.5s and dispatch track changes
   startWatcher() {
     setInterval(async () => {

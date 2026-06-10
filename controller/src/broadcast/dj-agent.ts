@@ -164,7 +164,7 @@ export const pickerAgent = defineAgent({
   maxSteps: 4,
   timeoutMs: 22000,
   buildSystem: () => pickSystem(),
-  buildTools: async ({ recentIds, recentKeys, recentArtists }) => {
+  buildTools: async ({ recentIds, recentKeys, recentArtists, justPlayedArtists }) => {
     const activeShow = settings.resolveActiveShow();
     const { maxDurationSec, excludePatterns } = settings.getPickerConfig(activeShow);
     let moodPool: any[] = [];
@@ -172,7 +172,7 @@ export const pickerAgent = defineAgent({
       await library.load();
       moodPool = library.songsByMood(activeShow.mood);
     }
-    const { tools, seen } = buildPickerTools({ recentIds, recentKeys, recentArtists, maxDurationSec, excludePatterns, moodPool });
+    const { tools, seen } = buildPickerTools({ recentIds, recentKeys, recentArtists, justPlayedArtists, maxDurationSec, excludePatterns, moodPool });
     if (activeShow?.topic) {
       const filtered = Object.fromEntries(
         Object.entries(tools).filter(([name]) => MOOD_AWARE_TOOLS.includes(name)),
@@ -239,12 +239,14 @@ async function pickViaAgent(queue, { wantLink }) {
   // do not exclude every real candidate before the picker sees it.
   const { ids: recentIds, keys: recentKeys } = queue.recentlyPlayed(windows.trackHours);
   const recentArtists = queue.recentArtistsSince(windows.artistHours);
+  const justPlayedArtists = queue.justPlayedArtistKeys();
 
   const { object, steps, toolCalls, extras } = await pickerAgent.run({
     messages: session.windowMessages(),
     recentIds,
     recentKeys,
     recentArtists,
+    justPlayedArtists,
   });
 
   const song = object?.id ? extras.seen.get(object.id) : null;

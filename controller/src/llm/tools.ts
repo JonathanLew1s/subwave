@@ -109,6 +109,7 @@ export function buildPickerTools({
   recentIds = new Set<string>(),
   recentKeys = new Set<string>(),
   recentArtists = new Set<string>(),
+  justPlayedArtists = new Set<string>(),
   maxDurationSec = 600,
   excludePatterns = [] as string[],
   moodPool = [] as any[],
@@ -116,6 +117,7 @@ export function buildPickerTools({
   recentIds?: Set<string>;
   recentKeys?: Set<string>;        // lowercased "title|artist" — backfilled entries lack ids
   recentArtists?: Set<string>;
+  justPlayedArtists?: Set<string>; // core artist key(s) of the current/previous track — never relaxed
   maxDurationSec?: number;
   excludePatterns?: string[];
   moodPool?: any[];
@@ -130,7 +132,7 @@ export function buildPickerTools({
   // agent — see picker-latency notes in dj-agent.js. The seen map still
   // accumulates across the whole loop, so the agent's id space grows with
   // each tool call regardless.
-  const acceptInto = (list: any, n: number) => {
+  const acceptInto = (list: any, n: number, { relaxArtists = true }: { relaxArtists?: boolean } = {}) => {
     if (n <= 0) return [];
     const withinLength = (list || []).filter((s: any) =>
       (!s.duration || s.duration <= maxDurationSec) && isRadioPickable(s.title ?? '', s.album, excludePatterns, s.genre));
@@ -138,10 +140,12 @@ export function buildPickerTools({
       recentIds,
       recentKeys,
       recentArtists,
+      justPlayedArtists,
       seenIds: new Set(seen.keys()),
       artistCounts,
       maxPerArtist: MAX_PER_ARTIST,
       cap: n,
+      relaxArtists,
     });
     const out: any[] = [];
     for (const s of accepted) {
@@ -157,7 +161,11 @@ export function buildPickerTools({
     if (moodPool.length) {
       out.push(...acceptInto(shuffle(moodPool), Math.min(MOOD_RESERVE, cap)));
     }
-    out.push(...acceptInto(list, cap - out.length));
+    // If the mood-pool reserve already added on-brief alternatives to `seen`,
+    // don't let this tool's own results fall back to a same-recent-artist
+    // candidate via the recency cascade — only relax recentArtists here when
+    // this is the only source of candidates so far.
+    out.push(...acceptInto(list, cap - out.length, { relaxArtists: seen.size === 0 }));
     return out;
   };
 

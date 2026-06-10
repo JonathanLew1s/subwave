@@ -68,15 +68,24 @@ async function refreshAutoPlaylistInner() {
   const activeShow = settings.resolveActiveShow();
   const { maxDurationSec, excludePatterns } = settings.getPickerConfig(activeShow);
 
+  // When a mood is active, every source — not just the dedicated 'mood' and
+  // 'playlist' sources — must fit it. Without this, the auto-playlist's
+  // top-up sources (recent/frequent/starred/random, typically ~18/30 tracks)
+  // can hand Liquidsoap something completely off-brief on cold start /
+  // underrun (e.g. a "Country"-tagged track during a "focus" show).
+  await library.load();
+  const moodIds = mood ? new Set(library.songsByMood(mood).map((t: any) => t.id)) : null;
+
   const pool: any[] = [];
   const fromSource: Record<string, number> = { mood: 0, playlist: 0, recent: 0, frequent: 0, starred: 0, random: 0 };
-  const take = (label: string, items: any[], cap: number) => {
+  const take = (label: string, items: any[], cap: number, { requireMood = false }: { requireMood?: boolean } = {}) => {
     let n = 0;
     for (const t of items) {
       if (n >= cap || pool.length >= TARGET_POOL) break;
       if (!t?.id || recent.has(t.id) || pool.find((p: any) => p.id === t.id)) continue;
       if (t.duration && t.duration > maxDurationSec) continue;
       if (!isRadioPickable(t.title ?? '', t.album, excludePatterns, t.genre)) continue;
+      if (requireMood && moodIds && !moodIds.has(t.id)) continue;
       pool.push({ ...t, _source: label });
       fromSource[label]++;
       n++;
@@ -84,7 +93,6 @@ async function refreshAutoPlaylistInner() {
   };
 
   // 1. Mood-tagged from the LLM-built library (only if tagger has run).
-  await library.load();
   if (mood) {
     take('mood', shuffle(library.songsByMood(mood)), MOOD_WEIGHT);
   }
@@ -111,7 +119,7 @@ async function refreshAutoPlaylistInner() {
   try {
     const recentAlbums = await subsonic.getRecentlyAddedAlbums({ size: 8 });
     const tracks = await tracksFromAlbums(shuffle(recentAlbums).slice(0, 4), 2, RECENT_WEIGHT * 2);
-    take('recent', tracks, RECENT_WEIGHT);
+    take('recent', tracks, RECENT_WEIGHT, { requireMood: true });
   } catch (err) {
     queue.log('error', `Recent-albums fetch failed: ${err.message}`);
   }
@@ -120,7 +128,7 @@ async function refreshAutoPlaylistInner() {
   try {
     const freqAlbums = await subsonic.getFrequentAlbums({ size: 8 });
     const tracks = await tracksFromAlbums(shuffle(freqAlbums).slice(0, 4), 2, FREQUENT_WEIGHT * 2);
-    take('frequent', tracks, FREQUENT_WEIGHT);
+    take('frequent', tracks, FREQUENT_WEIGHT, { requireMood: true });
   } catch (err) {
     queue.log('error', `Frequent-albums fetch failed: ${err.message}`);
   }
@@ -128,7 +136,7 @@ async function refreshAutoPlaylistInner() {
   // 5. Starred — hand-curated.
   try {
     const starred = shuffle(await subsonic.getStarred());
-    take('starred', starred, STARRED_WEIGHT);
+    take('starred', starred, STARRED_WEIGHT, { requireMood: true });
   } catch (err) {
     queue.log('error', `Starred fetch failed: ${err.message}`);
   }
@@ -137,7 +145,7 @@ async function refreshAutoPlaylistInner() {
   if (pool.length < TARGET_POOL) {
     try {
       const random = await subsonic.getRandomSongs({ size: TARGET_POOL });
-      take('random', random, TARGET_POOL);
+      take('random', random, TARGET_POOL, { requireMood: true });
     } catch (err) {
       queue.log('error', `Random fetch failed: ${err.message}`);
     }

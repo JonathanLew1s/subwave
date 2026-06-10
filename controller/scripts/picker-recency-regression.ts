@@ -96,4 +96,68 @@ assert.deepEqual(
   'expected maxPerArtist to count "Prince" and "Prince and The Revolution" credits together',
 );
 
+// --- justPlayedArtists hard floor (Aphex Twin back-to-back regression) -----
+// An artist-homogeneous candidate list (e.g. tracksLikeThis seeded on the
+// just-played track) must never re-admit that artist, even when the cascade
+// would otherwise relax recentArtists to avoid an empty result.
+const homogeneousSongs = [
+  { id: 'aphex-1', title: 'Track A', artist: 'Aphex Twin' },
+  { id: 'aphex-2', title: 'Track B', artist: 'Aphex Twin' },
+  { id: 'aphex-3', title: 'Track C', artist: 'Aphex Twin' },
+];
+const justPlayedBlocked = filterPickerCandidates(homogeneousSongs, {
+  recentArtists: new Set(['aphex twin']),
+  justPlayedArtists: new Set(['aphex twin']),
+  cap: 5,
+});
+assert.deepEqual(
+  justPlayedBlocked,
+  [],
+  'expected justPlayedArtists to block an artist-homogeneous list entirely, even via the relaxation cascade',
+);
+
+// Pathological case: an entirely single-artist input list, all by the
+// just-played artist — legitimately yields zero candidates from this list.
+// (Other tools / the mood-pool reserve are expected to cover the pick.)
+const singleArtistLibrary = [
+  { id: 'solo-1', title: 'Only Track', artist: 'Solo Artist' },
+];
+const singleArtistBlocked = filterPickerCandidates(singleArtistLibrary, {
+  recentArtists: new Set(['solo artist']),
+  justPlayedArtists: new Set(['solo artist']),
+  cap: 5,
+});
+assert.deepEqual(
+  singleArtistBlocked,
+  [],
+  'expected justPlayedArtists to block a single-artist input list entirely, with no relaxation',
+);
+
+// --- relaxArtists:false (mood-pool-already-supplied alternatives) ----------
+// When relaxArtists is false, the cascade must not fall through to the mode
+// that drops the recentArtists exclusion — a same-recent-artist candidate
+// should be dropped entirely rather than reintroduced.
+const relaxArtistsOff = filterPickerCandidates(homogeneousSongs, {
+  recentArtists: new Set(['aphex twin']),
+  relaxArtists: false,
+  cap: 5,
+});
+assert.deepEqual(
+  relaxArtistsOff,
+  [],
+  'expected relaxArtists:false to suppress the recentArtists-dropping cascade mode',
+);
+
+// Sanity: relaxArtists:true (default) still relaxes recentArtists when
+// candidates would otherwise be empty (existing "never empty" behaviour).
+const relaxArtistsOn = filterPickerCandidates(homogeneousSongs, {
+  recentArtists: new Set(['aphex twin']),
+  relaxArtists: true,
+  cap: 5,
+});
+assert(
+  relaxArtistsOn.length > 0,
+  'expected relaxArtists:true (default) to preserve the existing never-empty relaxation',
+);
+
 console.log('picker-recency regression checks passed');
