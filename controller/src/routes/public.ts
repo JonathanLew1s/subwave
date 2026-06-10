@@ -227,7 +227,7 @@ router.get('/schedule', async (req, res) => {
       id: show.id,
       name: show.name,
       topic: show.topic,
-      mood: show.mood,
+      moods: show.moods,
       personaId: show.personaId,
     }));
     res.json({

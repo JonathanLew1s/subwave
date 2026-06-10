@@ -168,9 +168,9 @@ export const pickerAgent = defineAgent({
     const activeShow = settings.resolveActiveShow();
     const { maxDurationSec, excludePatterns } = settings.getPickerConfig(activeShow);
     let moodPool: any[] = [];
-    if (activeShow?.mood) {
+    if (activeShow?.moods?.length) {
       await library.load();
-      moodPool = library.songsByMood(activeShow.mood);
+      moodPool = library.songsByMoods(activeShow.moods);
     }
     const { tools, seen } = buildPickerTools({ recentIds, recentKeys, recentArtists, justPlayedArtists, maxDurationSec, excludePatterns, moodPool });
     if (activeShow?.topic) {

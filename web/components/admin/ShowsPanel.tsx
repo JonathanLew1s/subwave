@@ -53,7 +53,7 @@ interface Show {
   name: string;
   topic: string;
   personaId: string;
-  mood: string;
+  moods: string[];
   /** Optional theme override — empty string means "fall back to the station
    *  default while this show is on air". Validated against the live theme
    *  registry by the controller; a stale id silently falls back too. */
@@ -129,7 +129,7 @@ function NowCard({ label, accent, slotHour, show, color, personaLabel }: NowCard
       </div>
       <div className="text-[11px] text-muted">
         {show
-          ? <>persona · {personaLabel} · mood · {show.mood}</>
+          ? <>persona · {personaLabel} · mood · {show.moods.join(', ')}</>
           : 'station runs on its own picker'}
       </div>
     </div>
@@ -155,7 +155,8 @@ function abbrev(name: string): string {
 
 function showValid(s: Show): boolean {
   return s.name.trim().length >= 1 && s.name.trim().length <= NAME_MAX
-    && !!s.personaId && !!s.mood && s.topic.trim().length <= TOPIC_MAX;
+    && !!s.personaId && s.moods.length >= 1 && s.moods.length <= 3
+    && s.topic.trim().length <= TOPIC_MAX;
 }
 
 export default function ShowsPanel() {
@@ -228,7 +229,7 @@ export default function ShowsPanel() {
           name: s.name ?? '',
           topic: s.topic ?? '',
           personaId: s.personaId ?? '',
-          mood: s.mood ?? '',
+          moods: Array.isArray(s.moods) ? s.moods : [],
           themeId: s.themeId ?? '',
           excludePatterns: Array.isArray(s.excludePatterns) ? s.excludePatterns : null,
         }));
@@ -259,7 +260,7 @@ export default function ShowsPanel() {
   }, [hydrated]);
 
   const personas: Persona[] = data?.values?.personas || [];
-  const moods: string[] = data?.tts?.moods || [];
+  const moodOptions: string[] = data?.tts?.moods || [];
   const colorOf = (showId: string | null | undefined): string => {
     const idx = form && showId ? form.shows.findIndex(s => s.id === showId) : -1;
     return idx >= 0 ? (SHOW_COLORS[idx % SHOW_COLORS.length] ?? 'transparent') : 'transparent';
@@ -274,7 +275,7 @@ export default function ShowsPanel() {
     setEditIndex(-1);
     setDraft({
       id: '', name: '', topic: '',
-      personaId: personas[0]?.id || '', mood: moods[0] || '',
+      personaId: personas[0]?.id || '', moods: moodOptions[0] ? [moodOptions[0]] : [],
       themeId: '',
       excludePatterns: null,
     });
@@ -286,7 +287,7 @@ export default function ShowsPanel() {
     setEditIndex(i);
     setDraft({
       id: s.id, name: s.name, topic: s.topic,
-      personaId: s.personaId, mood: s.mood,
+      personaId: s.personaId, moods: s.moods,
       themeId: s.themeId || '',
       excludePatterns: s.excludePatterns ?? null,
     });
@@ -297,7 +298,7 @@ export default function ShowsPanel() {
     if (!draft || !showValid(draft)) return;
     const clean = {
       name: draft.name.trim(), topic: draft.topic.trim(),
-      personaId: draft.personaId, mood: draft.mood,
+      personaId: draft.personaId, moods: draft.moods,
       themeId: draft.themeId || '',
       excludePatterns: draft.excludePatterns,
     };
@@ -433,7 +434,7 @@ export default function ShowsPanel() {
         body: JSON.stringify({
           shows: form.shows.map(s => ({
             id: s.id, name: s.name.trim(), topic: s.topic.trim(),
-            personaId: s.personaId, mood: s.mood,
+            personaId: s.personaId, moods: s.moods,
             themeId: s.themeId || '',
             excludePatterns: s.excludePatterns ?? null,
           })),
@@ -497,7 +498,7 @@ export default function ShowsPanel() {
               Programme the week, one hour at a time.
             </div>
             <div className="mt-1 text-[11px] text-muted">
-              Empty hours run autonomously. Each show owns a persona and a mood.
+              Empty hours run autonomously. Each show owns a persona and 1-3 moods.
               {' '}Changes apply live on save.
             </div>
           </div>
@@ -666,7 +667,7 @@ export default function ShowsPanel() {
           </Btn>
           {!canSave && !busy && (
             <span className="text-[11px] text-[var(--danger)]">
-              every show needs a name, persona, and mood
+              every show needs a name, persona, and at least one mood
             </span>
           )}
         </div>
@@ -702,40 +703,45 @@ export default function ShowsPanel() {
               <span className="field-hint">{draft.name.trim().length}/{NAME_MAX}</span>
             </Field>
 
-            <div className="stack-mobile grid grid-cols-[1fr_1fr] gap-3">
-              <Field>
-                <Label>persona owner</Label>
-                <Select
-                  value={draft.personaId || undefined}
-                  onValueChange={val => setDraftField({ personaId: val })}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="— pick persona —" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectGroup>
-                      {personas.map(p => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
-              </Field>
-              <Field>
-                <Label>music mood</Label>
-                <Select
-                  value={draft.mood || undefined}
-                  onValueChange={val => setDraftField({ mood: val })}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="— pick mood —" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectGroup>
-                      {moods.map(m => <SelectItem key={m} value={m}>{m}</SelectItem>)}
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
-              </Field>
-            </div>
+            <Field>
+              <Label>persona owner</Label>
+              <Select
+                value={draft.personaId || undefined}
+                onValueChange={val => setDraftField({ personaId: val })}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="— pick persona —" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    {personas.map(p => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </Field>
+
+            <Field>
+              <Label>music moods — pick 1 to 3</Label>
+              <div className="flex flex-wrap gap-1.5">
+                {moodOptions.map(m => {
+                  const active = draft.moods.includes(m);
+                  return (
+                    <Pill
+                      key={m}
+                      tone={active ? 'ink' : 'default'}
+                      onClick={() => setDraftField({
+                        moods: active
+                          ? draft.moods.filter(x => x !== m)
+                          : draft.moods.length < 3 ? [...draft.moods, m] : draft.moods,
+                      })}
+                    >
+                      {m}
+                    </Pill>
+                  );
+                })}
+              </div>
+              <span className="field-hint">{draft.moods.length}/3 selected</span>
+            </Field>
 
             <Field>
               <Label>theme override — applied while this show is on air</Label>
@@ -881,7 +887,7 @@ export default function ShowsPanel() {
 
             {!draftValid && (
               <div className="text-[11px] text-[var(--danger)]">
-                A show needs a name, a persona, and a mood.
+                A show needs a name, a persona, and 1-3 moods.
               </div>
             )}
           </div>
@@ -1048,7 +1054,7 @@ function GridCell({
       onMouseEnter={onMouseEnter}
       onTouchStart={onTouchStart}
       title={
-        (show ? `${show.name} (${show.mood})` : `${label} ${String(hour).padStart(2, '0')}:00 — empty`)
+        (show ? `${show.name} (${show.moods.join(', ')})` : `${label} ${String(hour).padStart(2, '0')}:00 — empty`)
         + (isNow ? ' · on air now' : '')
       }
       className={cn(
@@ -1096,7 +1102,7 @@ function ShowDefRow({ show: s, index: i, ok, hrs, personaLabel, onEdit, onRemove
           {s.name.trim() || 'untitled'}
         </div>
         <div className="text-[11px] text-muted">
-          persona · {personaLabel} · mood · {s.mood || '—'}
+          persona · {personaLabel} · mood · {s.moods.length ? s.moods.join(', ') : '—'}
         </div>
         {s.topic.trim() && (
           <div className="overflow-hidden text-[11px] text-ellipsis whitespace-nowrap text-muted italic">

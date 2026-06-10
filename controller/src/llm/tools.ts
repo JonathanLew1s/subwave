@@ -97,7 +97,7 @@ const MAX_PER_ARTIST = 2;
 // pass them in; defaults are applied here if absent for call-site safety.
 //
 // `moodPool` (optional) is a pre-fetched batch of tracks tagged with the
-// active show's mood (settings.shows[].mood — see dj-agent.js buildTools).
+// active show's moods (settings.shows[].moods — see dj-agent.js buildTools).
 // With COMMIT_AFTER_STEPS=1 the agent gets exactly one discovery call, and
 // that call's seed/query is the model's choice — e.g. tracksLikeThis(current)
 // anchors on whatever's playing, not the show brief. Reserving a few slots

@@ -144,6 +144,23 @@ export function songsByMood(mood: string | null | undefined): any[] {
   return widened;
 }
 
+// Union of songsByMood() across multiple moods, deduped by id. Shows now
+// declare 1-3 moods; this widens the candidate universe accordingly while
+// reusing the same per-mood neighbour-widening logic above.
+export function songsByMoods(moods: string[] | null | undefined): any[] {
+  if (!moods || !moods.length) return [];
+  const seen = new Set<string>();
+  const out: any[] = [];
+  for (const mood of moods) {
+    for (const row of songsByMood(mood)) {
+      if (seen.has(row.id)) continue;
+      out.push(row);
+      seen.add(row.id);
+    }
+  }
+  return out;
+}
+
 // Slim shape the picker + LLM tools expect — title/artist/album/year/genre
 // plus the two tagger axes. Matches what songsByMood returns above; pulled
 // out so the new embedding-similar helpers can share the same projection.

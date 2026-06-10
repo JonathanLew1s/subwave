@@ -61,7 +61,7 @@ export interface ScheduleShow {
   id: string;
   name: string;
   topic: string;
-  mood: string;
+  moods: string[];
   personaId: string;
 }
 /** 7 entries (Sun=0..Sat=6), each a 24-slot array of showId|null. */
