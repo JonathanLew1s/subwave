@@ -164,10 +164,15 @@ export const pickerAgent = defineAgent({
   maxSteps: 4,
   timeoutMs: 22000,
   buildSystem: () => pickSystem(),
-  buildTools: ({ recentIds, recentKeys, recentArtists }) => {
+  buildTools: async ({ recentIds, recentKeys, recentArtists }) => {
     const activeShow = settings.resolveActiveShow();
     const { maxDurationSec, excludePatterns } = settings.getPickerConfig(activeShow);
-    const { tools, seen } = buildPickerTools({ recentIds, recentKeys, recentArtists, maxDurationSec, excludePatterns });
+    let moodPool: any[] = [];
+    if (activeShow?.mood) {
+      await library.load();
+      moodPool = library.songsByMood(activeShow.mood);
+    }
+    const { tools, seen } = buildPickerTools({ recentIds, recentKeys, recentArtists, maxDurationSec, excludePatterns, moodPool });
     if (activeShow?.topic) {
       const filtered = Object.fromEntries(
         Object.entries(tools).filter(([name]) => MOOD_AWARE_TOOLS.includes(name)),

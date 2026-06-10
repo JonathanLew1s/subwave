@@ -95,18 +95,30 @@ const MAX_PER_ARTIST = 2;
 // `maxDurationSec` and `excludePatterns` come from settings.getPickerConfig()
 // (station-wide or per-show override). Callers should resolve these once and
 // pass them in; defaults are applied here if absent for call-site safety.
+//
+// `moodPool` (optional) is a pre-fetched batch of tracks tagged with the
+// active show's mood (settings.shows[].mood — see dj-agent.js buildTools).
+// With COMMIT_AFTER_STEPS=1 the agent gets exactly one discovery call, and
+// that call's seed/query is the model's choice — e.g. tracksLikeThis(current)
+// anchors on whatever's playing, not the show brief. Reserving a few slots
+// of every tool's results for moodPool means on-brief candidates are present
+// in the choice set regardless of which tool or seed the model picked.
+const MOOD_RESERVE = 3;
+
 export function buildPickerTools({
   recentIds = new Set<string>(),
   recentKeys = new Set<string>(),
   recentArtists = new Set<string>(),
   maxDurationSec = 600,
   excludePatterns = [] as string[],
+  moodPool = [] as any[],
 }: {
   recentIds?: Set<string>;
   recentKeys?: Set<string>;        // lowercased "title|artist" — backfilled entries lack ids
   recentArtists?: Set<string>;
   maxDurationSec?: number;
   excludePatterns?: string[];
+  moodPool?: any[];
 } = {}) {
   const seen = new Map<string, any>(); // id → slim song, accumulated across all tool calls
   const artistCounts = new Map<string, number>(); // artist key → songs already accepted into `seen`
@@ -118,7 +130,8 @@ export function buildPickerTools({
   // agent — see picker-latency notes in dj-agent.js. The seen map still
   // accumulates across the whole loop, so the agent's id space grows with
   // each tool call regardless.
-  const collect = (list: any, cap = 8) => {
+  const acceptInto = (list: any, n: number) => {
+    if (n <= 0) return [];
     const withinLength = (list || []).filter((s: any) =>
       (!s.duration || s.duration <= maxDurationSec) && isRadioPickable(s.title ?? '', s.album, excludePatterns, s.genre));
     const accepted = filterPickerCandidates(shuffle(withinLength as any[]), {
@@ -128,7 +141,7 @@ export function buildPickerTools({
       seenIds: new Set(seen.keys()),
       artistCounts,
       maxPerArtist: MAX_PER_ARTIST,
-      cap,
+      cap: n,
     });
     const out: any[] = [];
     for (const s of accepted) {
@@ -136,6 +149,15 @@ export function buildPickerTools({
       seen.set(s.id, slimmed);
       out.push(slimmed);
     }
+    return out;
+  };
+
+  const collect = (list: any, cap = 8) => {
+    const out: any[] = [];
+    if (moodPool.length) {
+      out.push(...acceptInto(shuffle(moodPool), Math.min(MOOD_RESERVE, cap)));
+    }
+    out.push(...acceptInto(list, cap - out.length));
     return out;
   };
 
