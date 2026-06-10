@@ -714,6 +714,7 @@ function normalizeShows(raw: any, personaIds: string[]) {
       id,
       name,
       topic: typeof item.topic === 'string' ? item.topic.trim().slice(0, 1000) : '',
+      vibe: typeof item.vibe === 'string' ? item.vibe.trim().slice(0, 300) : '',
       personaId: item.personaId,
       moods,
       themeId,
@@ -1293,6 +1294,8 @@ function validateShowsStrict(raw, personas, allowedThemeIds: Set<string>) {
     if (name.length < 1 || name.length > 60) throw new Error(`shows[${i}].name must be 1-60 chars`);
     const topic = String(item.topic ?? '').trim();
     if (topic.length > 1000) throw new Error(`shows[${i}].topic must be 0-1000 chars`);
+    const vibe = String(item.vibe ?? '').trim();
+    if (vibe.length > 300) throw new Error(`shows[${i}].vibe must be 0-300 chars`);
     if (!personaIds.includes(item.personaId)) {
       throw new Error(`shows[${i}].personaId must reference an existing persona`);
     }
@@ -1341,7 +1344,7 @@ function validateShowsStrict(raw, personas, allowedThemeIds: Set<string>) {
         return v;
       });
     }
-    return { id, name, topic, personaId: item.personaId, moods: item.moods, themeId, excludePatterns };
+    return { id, name, topic, vibe, personaId: item.personaId, moods: item.moods, themeId, excludePatterns };
   });
 }
 
@@ -1937,6 +1940,7 @@ export function resolveActiveShow(date = new Date(), s = get()) {
     id: show.id,
     name: show.name,
     topic: show.topic,
+    vibe: typeof show.vibe === 'string' ? show.vibe : '',
     moods: show.moods,
     // Empty string means "fall back to the station-wide default". The route
     // layer is responsible for resolving an empty/stale id against the live

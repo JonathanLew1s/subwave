@@ -127,6 +127,8 @@ export function songsByMood(mood: string | null | undefined): any[] {
       genre: r.genre,
       moods: r.moods,
       energy: r.energy,
+      popularitySong: r.popularitySong,
+      popularityAlbum: r.popularityAlbum,
     }));
 
   const exact = flatten(db.songsByMood(mood));
@@ -230,6 +232,31 @@ export function tracksByVector(vec: number[] | Float32Array, k: number): any[] {
     if (t) out.push({ ...slimTrack(t), _similarity: hit.similarity });
   }
   return out;
+}
+
+// Compute embedding-space similarity of the last N tracks. Returns a bucketed
+// string ('high' / 'medium' / 'low') by median pairwise distance, or null if
+// insufficient data. Tracks without embeddings are silently skipped.
+export function recentPicksSimilarity(trackIds: string[], n: number = 4): string | null {
+  if (!loaded || !trackIds.length) return null;
+  const ids = trackIds.slice(0, n).filter(id => !!id);
+  if (ids.length < 2) return null;
+  const vectors: (Float32Array | null)[] = ids.map(id => db.getVector(id));
+  const nonNull = vectors.filter((v): v is Float32Array => !!v);
+  if (nonNull.length < 2) return null;
+  let similaritySum = 0;
+  let count = 0;
+  for (let i = 0; i < nonNull.length; i++) {
+    for (let j = i + 1; j < nonNull.length; j++) {
+      const sim = db.cosineSimilarity(nonNull[i], nonNull[j]);
+      similaritySum += sim;
+      count++;
+    }
+  }
+  const median = count > 0 ? similaritySum / count : 0;
+  if (median >= 0.75) return 'high';
+  if (median >= 0.55) return 'medium';
+  return 'low';
 }
 
 export function stats() {

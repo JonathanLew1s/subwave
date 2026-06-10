@@ -28,12 +28,25 @@ import { loadSecretsIntoEnv } from '../setup/secrets.js';
 import { loadSetupConfig } from '../setup/config.js';
 import { runAnalysisPass } from './analyze.js';
 import * as analyzer from './analyzer.js';
+import * as navidrome from './navidrome-api.js';
 
 function parseIntFlag(args: string[], name: string): number | undefined {
   const idx = args.indexOf(name);
   if (idx < 0) return undefined;
   const n = parseInt(args[idx + 1], 10);
   return Number.isFinite(n) ? n : undefined;
+}
+
+export async function walkPopularityTags(username: string, password: string) {
+  let count = 0;
+  for await (const pop of navidrome.iteratePopularityTags(username, password)) {
+    db.setPopularity(pop.id, { song: pop.trackPopularity, album: pop.albumPopularity });
+    count++;
+    if (count % 1000 === 0) {
+      console.log(`[analyze] popularity backfilled: ${count}`);
+    }
+  }
+  console.log(`[analyze] popularity backfill complete: ${count} tracks`);
 }
 
 // Mirror of tag-library.ts applyWizardOverlay — env wins, setup-config fills gaps.
@@ -112,6 +125,16 @@ async function main() {
       const pruned = db.pruneMissingTracks(liveIds);
       if (pruned > 0) {
         console.log(`[analyze] pruned ${pruned} orphaned tracks no longer in Navidrome`);
+      }
+    }
+
+    // Popularity pass — fetch track/album popularity from Navidrome custom tags
+    // after metadata walk completes.
+    if (config.navidrome.user && config.navidrome.password) {
+      try {
+        await walkPopularityTags(config.navidrome.user, config.navidrome.password);
+      } catch (err: any) {
+        console.error('[analyze] popularity backfill failed:', err.message);
       }
     }
   }

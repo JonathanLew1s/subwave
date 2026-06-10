@@ -20,6 +20,7 @@ import { agenticTick, skillCatalog } from '../skills/_agent.js';
 import { withTrace } from '../observability/events.js';
 import { isRadioPickable } from '../llm/tools.js';
 import * as settings from '../settings.js';
+import * as pool from '../music/pool.js';
 
 const TARGET_POOL = 30;
 const MOOD_WEIGHT = 12;          // up to this many mood-tagged tracks per pool
@@ -74,27 +75,30 @@ async function refreshAutoPlaylistInner() {
   // can hand Liquidsoap something completely off-brief on cold start /
   // underrun (e.g. a "Country"-tagged track during a "focus" show).
   await library.load();
-  const moodIds = mood ? new Set(library.songsByMood(mood).map((t: any) => t.id)) : null;
+  const moods = activeShow?.moods || (mood ? [mood] : null);
+  const briefPoolResult = await pool.buildBriefPool({ moods, recentTrackIds: new Set() });
+  const briefIds = briefPoolResult.tracks.map((t: any) => t.id);
+  const moodIds = briefIds.length > 0 ? new Set(briefIds) : null;
 
-  const pool: any[] = [];
-  const fromSource: Record<string, number> = { mood: 0, playlist: 0, recent: 0, frequent: 0, starred: 0, random: 0 };
+  const poolArray: any[] = [];
+  const fromSource: Record<string, number> = { 'brief-pool': 0, playlist: 0, recent: 0, frequent: 0, starred: 0, random: 0 };
   const take = (label: string, items: any[], cap: number, { requireMood = false }: { requireMood?: boolean } = {}) => {
     let n = 0;
     for (const t of items) {
-      if (n >= cap || pool.length >= TARGET_POOL) break;
-      if (!t?.id || recent.has(t.id) || pool.find((p: any) => p.id === t.id)) continue;
+      if (n >= cap || poolArray.length >= TARGET_POOL) break;
+      if (!t?.id || recent.has(t.id) || poolArray.find((p: any) => p.id === t.id)) continue;
       if (t.duration && t.duration > maxDurationSec) continue;
       if (!isRadioPickable(t.title ?? '', t.album, excludePatterns, t.genre)) continue;
       if (requireMood && moodIds && !moodIds.has(t.id)) continue;
-      pool.push({ ...t, _source: label });
+      poolArray.push({ ...t, _source: label });
       fromSource[label]++;
       n++;
     }
   };
 
-  // 1. Mood-tagged from the LLM-built library (only if tagger has run).
-  if (mood) {
-    take('mood', shuffle(library.songsByMood(mood)), MOOD_WEIGHT);
+  // 1. Stratified brief-pool from the LLM-built library.
+  if (moods) {
+    take('brief-pool', shuffle(briefPoolResult.tracks), MOOD_WEIGHT);
   }
 
   // 2. Navidrome playlists whose name matches the mood — operator's hand curation.
@@ -142,7 +146,7 @@ async function refreshAutoPlaylistInner() {
   }
 
   // 6. Top up with random to TARGET_POOL.
-  if (pool.length < TARGET_POOL) {
+  if (poolArray.length < TARGET_POOL) {
     try {
       const random = await subsonic.getRandomSongs({ size: TARGET_POOL });
       take('random', random, TARGET_POOL, { requireMood: true });
@@ -151,10 +155,10 @@ async function refreshAutoPlaylistInner() {
     }
   }
 
-  const lines = ['#EXTM3U', ...pool.map((t: any) => subsonic.getAnnotatedUri(t))];
+  const lines = ['#EXTM3U', ...poolArray.map((t: any) => subsonic.getAnnotatedUri(t))];
   await writeFile(config.liquidsoap.autoPlaylist, lines.join('\n'));
   queue.log('scheduler',
-    `Auto-playlist refreshed: ${pool.length} tracks (` +
+    `Auto-playlist refreshed: ${poolArray.length} tracks (` +
     Object.entries(fromSource).filter(([, v]) => v > 0).map(([k, v]) => `${k}=${v}`).join(' ') +
     `, mood=${mood || 'none'})`);
 }

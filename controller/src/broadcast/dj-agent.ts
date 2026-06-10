@@ -16,6 +16,7 @@ import * as settings from '../settings.js';
 import * as session from './session.js';
 import * as picker from '../music/picker.js';
 import * as library from '../music/library.js';
+import * as pool from '../music/pool.js';
 import * as mix from '../music/mix.js';
 import * as dj from '../llm/dj.js';
 import { energyForDaypart } from '../context.js';
@@ -123,9 +124,12 @@ export function pickSystem() {
   const showLine = activeShow?.topic
     ? `\n\nCurrent show brief — follow this for every pick:\n${activeShow.topic}`
     : '';
+  const briefPoolLine = activeShow?.moods?.length
+    ? `\n\nSome candidates carry a "source" field of genre, energy, vibe, or eclectic — these were reserved from the show's brief pool specifically to give you on-brief variety beyond whatever your discovery tool returned. Prefer one of these when it fits, especially if your recent picks have felt similar to each other.`
+    : '';
   return `${settings.agentPersonaPreamble(persona, { rules: false })}
 
-You run the station as one continuous shift. The messages above are the live session.${djModeLine}${showLine}
+You run the station as one continuous shift. The messages above are the live session.${djModeLine}${showLine}${briefPoolLine}
 
 ${dj.PICKER_CRITERIA}`;
 }
@@ -167,12 +171,17 @@ export const pickerAgent = defineAgent({
   buildTools: async ({ recentIds, recentKeys, recentArtists, justPlayedArtists }) => {
     const activeShow = settings.resolveActiveShow();
     const { maxDurationSec, excludePatterns } = settings.getPickerConfig(activeShow);
-    let moodPool: any[] = [];
+    let briefPool: any[] = [];
     if (activeShow?.moods?.length) {
-      await library.load();
-      moodPool = library.songsByMoods(activeShow.moods);
+      const built = await pool.buildBriefPool({
+        moods: activeShow.moods,
+        vibeText: activeShow.vibe,
+        showId: activeShow.id,
+        recentTrackIds: recentIds,
+      });
+      briefPool = built.tracks;
     }
-    const { tools, seen } = buildPickerTools({ recentIds, recentKeys, recentArtists, justPlayedArtists, maxDurationSec, excludePatterns, moodPool });
+    const { tools, seen } = buildPickerTools({ recentIds, recentKeys, recentArtists, justPlayedArtists, maxDurationSec, excludePatterns, briefPool });
     if (activeShow?.topic) {
       const filtered = Object.fromEntries(
         Object.entries(tools).filter(([name]) => MOOD_AWARE_TOOLS.includes(name)),

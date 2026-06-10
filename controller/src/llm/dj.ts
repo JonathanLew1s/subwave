@@ -429,16 +429,16 @@ export async function generateHourlyTime(time: any, weather: any, { recap = null
 export const PICKER_CRITERIA = `Selection criteria, in order:
 1. SHOW BRIEF — if a current show brief is given above, its genre and mood are a hard constraint. Only consider tracks that fit it. A perfect flow transition into the wrong genre is still wrong. Use tracksByMood, tracksByEnergy, tracksLikeThis, searchByLyrics, or searchLibrary to find candidates that actually fit the show.
 2. FLOW — within the show's genre space, does it transition naturally from what just played (energy, tempo)? When a candidate shows a "bpm" and/or Camelot "key", those are MEASURED — prefer a next track whose tempo sits near the current one (or steps it deliberately for the daypart) and whose key is harmonically close. Treat them as a tie-breaker, never a hard rule; many tracks won't have them.
-3. VARIETY — never pick the same artist consecutively; don't repeat tracks already played today; rotate energy. Mix well-known tracks with deeper cuts — don't cluster obvious global hits back to back. Variety over cleverness — never pick a track because its title literally matches the time of day, the weather, or anything else literal.
+3. VARIETY — never pick the same artist consecutively; don't repeat tracks already played today; rotate energy. Mix well-known tracks with deeper cuts — don't cluster obvious global hits back to back. If recent picks have felt very similar to each other (check the recentSimilarity flag), prefer a briefPool candidate from a different genre or energy stratum — even over a strong similarity match. Variety over cleverness — never pick a track because its title literally matches the time of day, the weather, or anything else literal.
 4. INTEREST — prefer something that creates a moment, not the most generic option.`;
 
-function pickerSystem(show?: { name: string; topic: string } | null) {
+function pickerSystem(show?: { name: string; topic: string } | null, simLine: string = '') {
   const stationName = settings.get().station;
   const showLine = show?.topic
     ? `\n\nCurrent show brief — follow this for every pick:\n${show.topic}`
     : '';
   return `You are the DJ for ${stationName}, a personal internet radio station.
-Pick the single best NEXT track from the candidate pool, given recent plays and the current context.${showLine}
+Pick the single best NEXT track from the candidate pool, given recent plays and the current context.${showLine}${simLine}
 
 ${PICKER_CRITERIA}
 
@@ -456,11 +456,12 @@ unplayed, so you never need to reject one for being recent.
 Pick exactly one candidate.`;
 }
 
-export async function pickNextTrack({ candidates, recentPlays, context, show = null }: {
+export async function pickNextTrack({ candidates, recentPlays, context, show = null, recentSimilarity = null }: {
   candidates: any[];
   recentPlays: any;
   context: any;
   show?: { name: string; topic: string } | null;
+  recentSimilarity?: string | null;
 }) {
   const user = JSON.stringify({
     now: {
@@ -474,8 +475,12 @@ export async function pickNextTrack({ candidates, recentPlays, context, show = n
     candidates,
   }, null, 2);
 
+  const simLine = recentSimilarity && show
+    ? `\n\nYour recent picks cluster ${recentSimilarity}-similarity — prefer briefPool diversity.`
+    : '';
+
   return djObject({
-    system: pickerSystem(show),
+    system: pickerSystem(show, simLine),
     prompt: user,
     schema: z.object({
       id: z.string().describe('the exact id of one candidate'),

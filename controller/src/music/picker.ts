@@ -276,6 +276,8 @@ export async function pickViaPool(queue, ctx, rankTarget: { bpm: number | null; 
   const recentIds = queue.recentlyPlayedIds(windows.trackHours);
   const recentArtists = queue.recentArtistsSince(windows.artistHours);
   const currentTrack = queue.current?.track || null;
+  const recentTrackIds = queue.recentlyPlayedIds(24);
+  const recentSimilarity = library.recentPicksSimilarity(recentTrackIds, 4);
   const { candidates: rawCandidates, sources } = await buildCandidates(ctx.dominantMood, recentIds, recentArtists, currentTrack, rankTarget);
 
   // Apply picker constraints from settings — duration cap and exclude patterns.
@@ -330,6 +332,7 @@ export async function pickViaPool(queue, ctx, rankTarget: { bpm: number | null; 
       }),
       recentPlays,
       context: ctx,
+      recentSimilarity,
     });
   } catch (err) {
     // The LLM pick failed outright (e.g. unparseable structured output even

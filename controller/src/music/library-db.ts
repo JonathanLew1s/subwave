@@ -80,6 +80,10 @@ export interface TrackRecord {
   introMs: number | null;
   analysisConfidence: number | null;
   analysisVersion: number | null;
+  // Popularity scores from Navidrome custom tags (music/navidrome-api.ts).
+  // All nullable — a track without popularity data reads null.
+  popularitySong: number | null;
+  popularityAlbum: number | null;
 }
 
 export interface TrackMeta {
@@ -252,6 +256,17 @@ async function migrate(embeddingDim: number, reseed = false, adoptStoredDim = fa
       CREATE INDEX IF NOT EXISTS idx_tracks_analysis ON tracks(analysis_version);
     `);
     d.pragma('user_version = 2');
+  }
+
+  if (userVersion < 3) {
+    // Popularity columns — track and album popularity scores from Navidrome
+    // custom tags. All nullable, back-filled by music/navidrome-api.ts walk.
+    runDdl(d, `
+      ALTER TABLE tracks ADD COLUMN popularity_song  REAL;
+      ALTER TABLE tracks ADD COLUMN popularity_album REAL;
+      CREATE INDEX IF NOT EXISTS idx_tracks_popularity_song ON tracks(popularity_song);
+    `);
+    d.pragma('user_version = 3');
   }
 
   // The vec0 virtual table carries the embedding dim in its schema. If the
@@ -525,6 +540,14 @@ export function upsertTrackAnalysis(id: string, a: TrackAnalysisWrite): void {
     );
 }
 
+export function setPopularity(id: string, popularity: { song: number | null; album: number | null }) {
+  if (!db) throw new Error('database not open');
+  const stmt = db.prepare(
+    'UPDATE tracks SET popularity_song = ?, popularity_album = ? WHERE id = ?'
+  );
+  stmt.run(popularity.song, popularity.album, id);
+}
+
 // Ids that still need acoustic analysis: never analysed, or analysed by an
 // older ANALYSIS_VERSION. Ordered for stable resumption. `limit` caps a run.
 export function needsAnalysisIds(limit?: number): string[] {
@@ -581,6 +604,15 @@ export function dropVectors(): void {
 export interface KnnHit {
   id: string;
   similarity: number; // 1 - cosine_distance, so 1.0 = identical, 0 = orthogonal
+}
+
+export function getVector(id: string): Float32Array | null {
+  const d = requireDb();
+  const row = d.prepare(`SELECT embedding FROM track_vectors WHERE id = ?`).get(id) as
+    | { embedding: Buffer }
+    | undefined;
+  if (!row) return null;
+  return new Float32Array(row.embedding.buffer, row.embedding.byteOffset, row.embedding.length / 4);
 }
 
 export function knnById(id: string, k: number): KnnHit[] {
@@ -883,6 +915,8 @@ function rowToTrack(row: any): TrackRecord {
     introMs: row.intro_ms ?? null,
     analysisConfidence: row.analysis_confidence ?? null,
     analysisVersion: row.analysis_version ?? null,
+    popularitySong: row.popularity_song ?? null,
+    popularityAlbum: row.popularity_album ?? null,
   };
 }
 
@@ -903,4 +937,17 @@ function normaliseYear(y: unknown): number | null {
     return Number.isFinite(n) ? n : null;
   }
   return null;
+}
+
+// Cosine similarity of two float vectors. Returns [−1, 1]; higher = more similar.
+export function cosineSimilarity(a: Float32Array | number[] | null, b: Float32Array | number[] | null): number {
+  if (!a || !b || a.length !== b.length) return 0;
+  let dot = 0, magA = 0, magB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    magA += a[i] * a[i];
+    magB += b[i] * b[i];
+  }
+  const denom = Math.sqrt(magA) * Math.sqrt(magB);
+  return denom > 0 ? dot / denom : 0;
 }

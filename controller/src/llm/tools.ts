@@ -52,6 +52,7 @@ function slim(s: any) {
     year: s.year || null,
     genre: s.genre || null,
     ...(s.duration != null ? { duration: Math.round(s.duration) } : {}),
+    ...(s._source ? { source: s._source } : {}),
   };
   // Surface measured tempo/key when known — from the song itself (library
   // sources) or a library lookup (Subsonic sources). Omitted when un-analysed
@@ -96,14 +97,16 @@ const MAX_PER_ARTIST = 2;
 // (station-wide or per-show override). Callers should resolve these once and
 // pass them in; defaults are applied here if absent for call-site safety.
 //
-// `moodPool` (optional) is a pre-fetched batch of tracks tagged with the
-// active show's moods (settings.shows[].moods — see dj-agent.js buildTools).
-// With COMMIT_AFTER_STEPS=1 the agent gets exactly one discovery call, and
-// that call's seed/query is the model's choice — e.g. tracksLikeThis(current)
-// anchors on whatever's playing, not the show brief. Reserving a few slots
-// of every tool's results for moodPool means on-brief candidates are present
-// in the choice set regardless of which tool or seed the model picked.
-const MOOD_RESERVE = 3;
+// `briefPool` (optional) is a pre-built, stratified pool of tracks fitting
+// the active show's brief — genre/energy/vibe/eclectic slices drawn from the
+// mood-curated universe (music/pool.js buildBriefPool, see dj-agent.js
+// buildTools). With COMMIT_AFTER_STEPS=1 the agent gets exactly one discovery
+// call, and that call's seed/query is the model's choice — e.g.
+// tracksLikeThis(current) anchors on whatever's playing, not the show brief.
+// Reserving a few slots of every tool's results for briefPool means on-brief,
+// stratified candidates are present in the choice set regardless of which
+// tool or seed the model picked.
+const BRIEF_RESERVE = 4;
 
 export function buildPickerTools({
   recentIds = new Set<string>(),
@@ -112,7 +115,7 @@ export function buildPickerTools({
   justPlayedArtists = new Set<string>(),
   maxDurationSec = 600,
   excludePatterns = [] as string[],
-  moodPool = [] as any[],
+  briefPool = [] as any[],
 }: {
   recentIds?: Set<string>;
   recentKeys?: Set<string>;        // lowercased "title|artist" — backfilled entries lack ids
@@ -120,7 +123,7 @@ export function buildPickerTools({
   justPlayedArtists?: Set<string>; // core artist key(s) of the current/previous track — never relaxed
   maxDurationSec?: number;
   excludePatterns?: string[];
-  moodPool?: any[];
+  briefPool?: any[];
 } = {}) {
   const seen = new Map<string, any>(); // id → slim song, accumulated across all tool calls
   const artistCounts = new Map<string, number>(); // artist key → songs already accepted into `seen`
@@ -156,12 +159,12 @@ export function buildPickerTools({
     return out;
   };
 
-  const collect = (list: any, cap = 8) => {
+  const collect = (list: any, cap = 10) => {
     const out: any[] = [];
-    if (moodPool.length) {
-      out.push(...acceptInto(shuffle(moodPool), Math.min(MOOD_RESERVE, cap)));
+    if (briefPool.length) {
+      out.push(...acceptInto(shuffle(briefPool), Math.min(BRIEF_RESERVE, cap)));
     }
-    // If the mood-pool reserve already added on-brief alternatives to `seen`,
+    // If the brief-pool reserve already added on-brief alternatives to `seen`,
     // don't let this tool's own results fall back to a same-recent-artist
     // candidate via the recency cascade — only relax recentArtists here when
     // this is the only source of candidates so far.
@@ -250,7 +253,7 @@ export function buildPickerTools({
     }),
 
     tracksLikeThis: tool({
-      description: 'Tracks whose mood + lyrics + metadata embed closest to a seed track — the controller\'s own semantic similarity over the actual library. Prefer this to similarSongs when "more of this vibe" matters more than "more by this artist". Pass the currently-playing song id (best) OR a track title — a title is resolved to the matching track. Returns [] only if neither a song id nor a title match anything embedded.',
+      description: 'Tracks whose mood + lyrics + metadata embed closest to a seed track — the controller\'s own semantic similarity over the actual library. Prefer this to similarSongs when "more of this vibe" matters more than "more by this artist". Pass the currently-playing song id (best) OR a track title — a title is resolved to the matching track. Returns [] only if neither a song id nor a title match anything embedded. Use as one source of candidates — verify results fit the active show brief before committing.',
       inputSchema: z.object({
         songId: z.string().describe('a song id (preferred) or a track title'),
         k: z.number().int().min(1).max(50).default(20),
