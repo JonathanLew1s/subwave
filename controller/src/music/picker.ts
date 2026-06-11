@@ -25,6 +25,7 @@ const CAP_RECENT = 4;
 const CAP_FREQUENT = 4;
 const CAP_SIMILAR_ARTIST = 4;
 const CAP_EMBEDDING_SIMILAR = 4;
+const CAP_SONIC_SIMILAR = 4;
 
 // TTL cache for sources that don't change between picks. Without this, every
 // pick would re-fetch playlists, recent/frequent album lists and re-walk their
@@ -129,6 +130,21 @@ async function buildCandidates(mood: string | null | undefined, recentIds: Set<s
     try {
       const knn = library.tracksLikeThis(currentTrack.id, 15);
       add('embedding-similar', sampleWithRecentFallback(knn, recentIds, CAP_EMBEDDING_SIMILAR));
+    } catch {}
+  }
+
+  // 1c. Sonic-similarity from current track — Navidrome's own audio-based
+  // neighbours (OpenSubsonic `sonicSimilarity` extension, Navidrome ≥0.62 with
+  // the plugin enabled). A third, acoustically-grounded signal alongside the
+  // Last.fm graph (1) and the embedding-KNN (1b). The support probe is cached
+  // 30 min in subsonic.ts, so this costs one extra call per pick only when the
+  // extension is actually present; otherwise it's a silent no-op.
+  if (currentTrack?.id) {
+    try {
+      if (await subsonic.supportsSonicSimilarity()) {
+        const sonic = await subsonic.getSonicSimilarTracks(currentTrack.id, { count: 20 });
+        add('sonic-similar', sampleWithRecentFallback(sonic, recentIds, CAP_SONIC_SIMILAR));
+      }
     } catch {}
   }
 
@@ -308,6 +324,8 @@ export async function pickViaPool(queue, ctx, rankTarget: { bpm: number | null; 
 
   let pickRaw;
   try {
+    // Same show-brief plumbing as the agent picker (dj-agent.pickSystem) —
+    // this is its fallback, so it must honour the brief too.
     const activeShow = settings.resolveActiveShow();
     pickRaw = await dj.pickNextTrack({
       show: activeShow ? { name: activeShow.name, topic: activeShow.topic } : null,
