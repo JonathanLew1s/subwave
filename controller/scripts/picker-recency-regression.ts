@@ -6,6 +6,8 @@ import {
   filterPickerCandidates,
   recencyWindowsForLibrary,
 } from '../src/music/recency.js';
+import { buildSequencedPlaylist } from '../src/music/pool.js';
+import { pickFallback } from '../src/music/picker.js';
 
 const smallLibraryWindows = recencyWindowsForLibrary(10);
 assert(
@@ -158,6 +160,66 @@ const relaxArtistsOn = filterPickerCandidates(homogeneousSongs, {
 assert(
   relaxArtistsOn.length > 0,
   'expected relaxArtists:true (default) to preserve the existing never-empty relaxation',
+);
+
+// --- buildSequencedPlaylist (auto-playlist recency parity) -----------------
+// A pool with two artists alternated, plus a duplicate-artist run, must
+// sequence so no two adjacent slots share a coreArtistKey.
+const sequencingPool = [
+  { id: 'seq-1', title: 'A1', artist: 'Adele' },
+  { id: 'seq-2', title: 'A2', artist: 'Adele' },
+  { id: 'seq-3', title: 'A3', artist: 'Adele' },
+  { id: 'seq-4', title: 'B1', artist: 'Bonobo' },
+  { id: 'seq-5', title: 'B2', artist: 'Bonobo' },
+  { id: 'seq-6', title: 'C1', artist: 'Tricky' },
+];
+const sequenced = buildSequencedPlaylist(sequencingPool, 6);
+for (let i = 1; i < sequenced.length; i++) {
+  assert.notEqual(
+    coreArtistKey(sequenced[i]),
+    coreArtistKey(sequenced[i - 1]),
+    `expected no back-to-back same-artist tracks in sequenced playlist, got ${sequenced[i - 1].artist} -> ${sequenced[i].artist} at index ${i}`,
+  );
+}
+
+// Seeding justPlayedArtists from the live queue must keep slot 0 from
+// repeating whatever just played, even though nothing in this playlist has
+// played yet.
+const seededSequence = buildSequencedPlaylist(sequencingPool, 6, {
+  justPlayedArtists: new Set(['adele']),
+});
+assert.notEqual(
+  coreArtistKey(seededSequence[0]),
+  'adele',
+  'expected seeded justPlayedArtists to keep slot 0 from repeating the live queue\'s just-played artist',
+);
+
+// --- pickFallback (pickViaPool fallback paths) ------------------------------
+// candidates[0] must be skipped when it matches justPlayedArtists, falling
+// through to the next candidate by a different artist.
+const fallbackCandidates = [
+  { id: 'fb-1', title: 'Just Played Again', artist: 'Aphex Twin' },
+  { id: 'fb-2', title: 'Something Else', artist: 'Bonobo' },
+];
+assert.equal(
+  pickFallback(fallbackCandidates, new Set(['aphex twin'])).id,
+  'fb-2',
+  'expected pickFallback to skip candidates[0] when it matches justPlayedArtists',
+);
+
+// When every candidate matches justPlayedArtists, fall back to candidates[0]
+// rather than returning nothing.
+assert.equal(
+  pickFallback(fallbackCandidates, new Set(['aphex twin', 'bonobo'])).id,
+  'fb-1',
+  'expected pickFallback to fall back to candidates[0] when every candidate matches justPlayedArtists',
+);
+
+// No justPlayedArtists at all — candidates[0] as before.
+assert.equal(
+  pickFallback(fallbackCandidates, new Set()).id,
+  'fb-1',
+  'expected pickFallback to return candidates[0] when justPlayedArtists is empty',
 );
 
 console.log('picker-recency regression checks passed');

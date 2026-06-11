@@ -637,19 +637,31 @@ class Queue {
           wantLink = true;
         }
       }
-      this.pickerBusy = true;
-      (async () => {
-        try {
-          const ctx = await getFullContext();
-          await session.maybeRoll(ctx);
-          await djAgent.runTrackEvent(this, ctx, { wantLink });
-        } catch (err: any) {
-          this.log('error', `DJ track event failed: ${err.message}`);
-        } finally {
-          this.pickerBusy = false;
-        }
-      })();
+      this.triggerPickIfIdle({ wantLink });
     }
+  }
+
+  // Kicks off an auto-DJ pick if the queue is idle, nobody else is already
+  // picking, and a listener is present — a no-op otherwise. Extracted from
+  // onTrackStarted's track-change trigger so the watcher's periodic tick
+  // (below) can also call it: as soon as djCallsAllowed() flips true while
+  // `upcoming` is empty, the very next 1.5s tick queues a pick, rather than
+  // waiting for the next track-change event. Idempotent/safe — `pickerBusy`
+  // and `upcoming.length` make repeated calls harmless.
+  triggerPickIfIdle({ wantLink = false }: { wantLink?: boolean } = {}) {
+    if (!this.autoPick || this.upcoming.length !== 0 || this.pickerBusy || !djCallsAllowed()) return;
+    this.pickerBusy = true;
+    (async () => {
+      try {
+        const ctx = await getFullContext();
+        await session.maybeRoll(ctx);
+        await djAgent.runTrackEvent(this, ctx, { wantLink });
+      } catch (err: any) {
+        this.log('error', `DJ track event failed: ${err.message}`);
+      } finally {
+        this.pickerBusy = false;
+      }
+    })();
   }
 
   // Tracks played in the last `hours` hours — used by the picker to block
@@ -734,6 +746,9 @@ class Queue {
     setInterval(async () => {
       const np = await this.getNowPlaying();
       this.onTrackStarted(np);
+      // Independent of the track-change dedup above — covers the case where
+      // djCallsAllowed() flips true mid-track while the queue is idle.
+      this.triggerPickIfIdle({ wantLink: false });
     }, 1500);
     this.log('scheduler', 'Now-playing watcher started');
   }

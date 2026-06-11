@@ -12,7 +12,7 @@ import * as dj from '../llm/dj.js';
 import * as settings from '../settings.js';
 import { isRadioPickable } from '../llm/tools.js';
 import { bpmCompat, keyCompat } from './mix.js';
-import { filterPickerCandidates, recencyWindowsForLibrary } from './recency.js';
+import { filterPickerCandidates, recencyWindowsForLibrary, artistKey, coreArtistKey } from './recency.js';
 
 const CANDIDATE_CAP = 18;
 const HISTORY_DEPTH = 4;
@@ -100,7 +100,7 @@ async function tracksFromAlbums(albums: any[], perAlbum: number, max: number) {
   return out;
 }
 
-async function buildCandidates(mood: string | null | undefined, recentIds: Set<string>, recentArtists: Set<string>, currentTrack: any, rankTarget: { bpm: number | null; key: string | null } | null = null) {
+async function buildCandidates(mood: string | null | undefined, recentIds: Set<string>, recentArtists: Set<string>, currentTrack: any, rankTarget: { bpm: number | null; key: string | null } | null = null, justPlayedArtists: Set<string> = new Set()) {
   await library.load();
   const pool: any[] = [];
   const sources: Record<string, number> = {};
@@ -256,12 +256,29 @@ async function buildCandidates(mood: string | null | undefined, recentIds: Set<s
   const final = filterPickerCandidates(softRankByCompat(pool, curAnalysis), {
     recentIds,
     recentArtists,
+    justPlayedArtists,
     artistCounts: perArtist,
     maxPerArtist: MAX_PER_ARTIST,
     cap: CANDIDATE_CAP,
   });
 
   return { candidates: final, sources };
+}
+
+// Fallback selection for when the LLM pick fails or returns an unknown id —
+// pick the first pool candidate whose artist isn't the one that's currently
+// (or just) playing, so a degraded pick still can't produce a back-to-back
+// repeat. Falls back to candidates[0] only if every candidate is excluded.
+export function pickFallback(candidates: any[], justPlayedArtists: Set<string>): any {
+  if (justPlayedArtists.size > 0) {
+    const ok = candidates.find((c) => {
+      const key = artistKey(c);
+      const core = coreArtistKey(c);
+      return !((key && justPlayedArtists.has(key)) || (core && justPlayedArtists.has(core)));
+    });
+    if (ok) return ok;
+  }
+  return candidates[0];
 }
 
 function summariseRecent(queue: any) {
@@ -291,10 +308,11 @@ export async function pickViaPool(queue, ctx, rankTarget: { bpm: number | null; 
   const windows = recencyWindowsForLibrary(library.stats().distinctArtists);
   const recentIds = queue.recentlyPlayedIds(windows.trackHours);
   const recentArtists = queue.recentArtistsSince(windows.artistHours);
+  const justPlayedArtists = queue.justPlayedArtistKeys();
   const currentTrack = queue.current?.track || null;
   const recentTrackIds = queue.recentlyPlayedIds(24);
   const recentSimilarity = library.recentPicksSimilarity(recentTrackIds, 4);
-  const { candidates: rawCandidates, sources } = await buildCandidates(ctx.dominantMood, recentIds, recentArtists, currentTrack, rankTarget);
+  const { candidates: rawCandidates, sources } = await buildCandidates(ctx.dominantMood, recentIds, recentArtists, currentTrack, rankTarget, justPlayedArtists);
 
   // Apply picker constraints from settings — duration cap and exclude patterns.
   // Per-show overrides apply here: a live-sets show can set excludePatterns=[]
@@ -358,10 +376,11 @@ export async function pickViaPool(queue, ctx, rankTarget: { bpm: number | null; 
     // take the top candidate rather than returning null, which would starve
     // the queue and drop the stream to the generic auto.m3u playlist.
     queue.log('error', `picker LLM failed: ${err.message} — falling back to first pool candidate`);
+    const fallback = pickFallback(candidates, justPlayedArtists);
     return {
-      song: candidates[0],
+      song: fallback,
       reason: 'fallback (LLM pick failed)',
-      source: candidates[0]._source,
+      source: fallback._source,
     };
   }
 
@@ -372,7 +391,7 @@ export async function pickViaPool(queue, ctx, rankTarget: { bpm: number | null; 
       `picker returned unknown id ${pickRaw?.id}; falling back to first candidate`,
     );
     return {
-      song: candidates[0],
+      song: pickFallback(candidates, justPlayedArtists),
       reason: 'fallback (LLM returned invalid id)',
     };
   }

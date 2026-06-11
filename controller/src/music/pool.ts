@@ -13,6 +13,7 @@
 
 import * as library from './library.js';
 import * as embeddings from './embeddings.js';
+import { filterPickerCandidates, artistKey, coreArtistKey } from './recency.js';
 
 export interface BriefPoolTrack {
   id: string;
@@ -158,4 +159,52 @@ export async function buildBriefPool({
   add(popularityWeighted, 'popularity');
 
   return { tracks: out, bySource };
+}
+
+// Sequences a candidate pool into an ordered playlist of up to `n` tracks,
+// applying the same recency rules as the live picker (recency.ts) so the
+// auto-playlist can never repeat an artist back-to-back. Each slot is chosen
+// via filterPickerCandidates with maxPerArtist:1 against the slot-immediately-
+// before's artist (a hard, never-relaxed floor — mirrors justPlayedArtists in
+// the picker), plus a softer running recentArtists set across the whole
+// playlist (relaxed by the cascade once the pool thins out). Both sets are
+// seeded from the live queue so slot 0 also can't repeat what's currently/just
+// playing. Stops early (returns fewer than n) if the pool is exhausted under
+// the hard floor — never hard-fails.
+export function buildSequencedPlaylist<T extends { id: string; artist?: string | null }>(
+  candidates: T[],
+  n: number,
+  {
+    justPlayedArtists = new Set<string>(),
+    recentArtists = new Set<string>(),
+  }: { justPlayedArtists?: Set<string>; recentArtists?: Set<string> } = {},
+): T[] {
+  const remaining = [...candidates];
+  const runningRecentArtists = new Set(recentArtists);
+  let lastArtists = new Set(justPlayedArtists);
+  const out: T[] = [];
+
+  while (out.length < n && remaining.length > 0) {
+    const picked = filterPickerCandidates(remaining, {
+      justPlayedArtists: lastArtists,
+      recentArtists: runningRecentArtists,
+      maxPerArtist: 1,
+      cap: 1,
+    });
+    if (picked.length === 0) break;
+
+    const chosen = picked[0];
+    out.push(chosen);
+
+    const idx = remaining.findIndex((t) => t.id === chosen.id);
+    if (idx >= 0) remaining.splice(idx, 1);
+
+    const key = artistKey(chosen);
+    const core = coreArtistKey(chosen);
+    lastArtists = new Set([key, core].filter(Boolean));
+    if (key) runningRecentArtists.add(key);
+    if (core) runningRecentArtists.add(core);
+  }
+
+  return out;
 }

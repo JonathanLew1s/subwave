@@ -22,6 +22,7 @@ import { isRadioPickable } from '../llm/tools.js';
 import * as settings from '../settings.js';
 import * as pool from '../music/pool.js';
 import { refreshPopularity } from '../music/popularity.js';
+import { recencyWindowsForLibrary } from '../music/recency.js';
 
 const TARGET_POOL = 30;
 const MOOD_WEIGHT = 12;          // up to this many mood-tagged tracks per pool
@@ -81,25 +82,31 @@ async function refreshAutoPlaylistInner() {
   const briefIds = briefPoolResult.tracks.map((t: any) => t.id);
   const moodIds = briefIds.length > 0 ? new Set(briefIds) : null;
 
-  const poolArray: any[] = [];
-  const fromSource: Record<string, number> = { 'brief-pool': 0, playlist: 0, recent: 0, frequent: 0, starred: 0, random: 0 };
-  const take = (label: string, items: any[], cap: number, { requireMood = false }: { requireMood?: boolean } = {}) => {
+  // Gather a deduped candidate pool ~2x TARGET_POOL — same per-source weights
+  // (doubled) and filters as before, but no artist-level decisions are made
+  // here. buildSequencedPlaylist below picks the final TARGET_POOL tracks,
+  // ordering them so no two adjacent tracks share a coreArtistKey, using the
+  // same recency rules as the live picker (recency.ts).
+  const CANDIDATE_TARGET = TARGET_POOL * 2;
+  const candidates: any[] = [];
+  const seen = new Set<string>();
+  const add = (label: string, items: any[], cap: number, { requireMood = false }: { requireMood?: boolean } = {}) => {
     let n = 0;
     for (const t of items) {
-      if (n >= cap || poolArray.length >= TARGET_POOL) break;
-      if (!t?.id || recent.has(t.id) || poolArray.find((p: any) => p.id === t.id)) continue;
+      if (n >= cap || candidates.length >= CANDIDATE_TARGET) break;
+      if (!t?.id || recent.has(t.id) || seen.has(t.id)) continue;
       if (t.duration && t.duration > maxDurationSec) continue;
       if (!isRadioPickable(t.title ?? '', t.album, excludePatterns, t.genre)) continue;
       if (requireMood && moodIds && !moodIds.has(t.id)) continue;
-      poolArray.push({ ...t, _source: label });
-      fromSource[label]++;
+      seen.add(t.id);
+      candidates.push({ ...t, _source: label });
       n++;
     }
   };
 
   // 1. Stratified brief-pool from the LLM-built library.
   if (moods) {
-    take('brief-pool', shuffle(briefPoolResult.tracks), MOOD_WEIGHT);
+    add('brief-pool', shuffle(briefPoolResult.tracks), MOOD_WEIGHT * 2);
   }
 
   // 2. Navidrome playlists whose name matches the mood — operator's hand curation.
@@ -114,7 +121,7 @@ async function refreshAutoPlaylistInner() {
           tracks.push(...songs);
         } catch {}
       }
-      take('playlist', shuffle(tracks), PLAYLIST_WEIGHT);
+      add('playlist', shuffle(tracks), PLAYLIST_WEIGHT * 2);
     } catch (err) {
       queue.log('error', `Playlist fetch failed: ${err.message}`);
     }
@@ -123,8 +130,8 @@ async function refreshAutoPlaylistInner() {
   // 3. Recently-added albums — surfaces new music without any tagging.
   try {
     const recentAlbums = await subsonic.getRecentlyAddedAlbums({ size: 8 });
-    const tracks = await tracksFromAlbums(shuffle(recentAlbums).slice(0, 4), 2, RECENT_WEIGHT * 2);
-    take('recent', tracks, RECENT_WEIGHT, { requireMood: true });
+    const tracks = await tracksFromAlbums(shuffle(recentAlbums).slice(0, 4), 2, RECENT_WEIGHT * 4);
+    add('recent', tracks, RECENT_WEIGHT * 2, { requireMood: true });
   } catch (err) {
     queue.log('error', `Recent-albums fetch failed: ${err.message}`);
   }
@@ -132,8 +139,8 @@ async function refreshAutoPlaylistInner() {
   // 4. Frequent albums — Navidrome's scrobble-backed favourites.
   try {
     const freqAlbums = await subsonic.getFrequentAlbums({ size: 8 });
-    const tracks = await tracksFromAlbums(shuffle(freqAlbums).slice(0, 4), 2, FREQUENT_WEIGHT * 2);
-    take('frequent', tracks, FREQUENT_WEIGHT, { requireMood: true });
+    const tracks = await tracksFromAlbums(shuffle(freqAlbums).slice(0, 4), 2, FREQUENT_WEIGHT * 4);
+    add('frequent', tracks, FREQUENT_WEIGHT * 2, { requireMood: true });
   } catch (err) {
     queue.log('error', `Frequent-albums fetch failed: ${err.message}`);
   }
@@ -141,20 +148,33 @@ async function refreshAutoPlaylistInner() {
   // 5. Starred — hand-curated.
   try {
     const starred = shuffle(await subsonic.getStarred());
-    take('starred', starred, STARRED_WEIGHT, { requireMood: true });
+    add('starred', starred, STARRED_WEIGHT * 2, { requireMood: true });
   } catch (err) {
     queue.log('error', `Starred fetch failed: ${err.message}`);
   }
 
-  // 6. Top up with random to TARGET_POOL.
-  if (poolArray.length < TARGET_POOL) {
+  // 6. Top up with random to CANDIDATE_TARGET.
+  if (candidates.length < CANDIDATE_TARGET) {
     try {
-      const random = await subsonic.getRandomSongs({ size: TARGET_POOL });
-      take('random', random, TARGET_POOL, { requireMood: true });
+      const random = await subsonic.getRandomSongs({ size: CANDIDATE_TARGET });
+      add('random', random, CANDIDATE_TARGET, { requireMood: true });
     } catch (err) {
       queue.log('error', `Random fetch failed: ${err.message}`);
     }
   }
+
+  // Sequence the final playlist using the same recency rules as the live
+  // picker — no two adjacent tracks share an artist, seeded from whatever the
+  // live queue just played so the auto-playlist's first track doesn't repeat
+  // it either.
+  const windows = recencyWindowsForLibrary(library.stats().distinctArtists);
+  const poolArray = pool.buildSequencedPlaylist(candidates, TARGET_POOL, {
+    justPlayedArtists: queue.justPlayedArtistKeys(),
+    recentArtists: queue.recentArtistsSince(windows.artistHours),
+  });
+
+  const fromSource: Record<string, number> = {};
+  for (const t of poolArray) fromSource[t._source] = (fromSource[t._source] || 0) + 1;
 
   const lines = ['#EXTM3U', ...poolArray.map((t: any) => subsonic.getAnnotatedUri(t))];
   await writeFile(config.liquidsoap.autoPlaylist, lines.join('\n'));
