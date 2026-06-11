@@ -16,6 +16,7 @@ import * as settings from '../settings.js';
 import * as session from './session.js';
 import * as picker from '../music/picker.js';
 import * as library from '../music/library.js';
+import * as pool from '../music/pool.js';
 import * as mix from '../music/mix.js';
 import * as dj from '../llm/dj.js';
 import { energyForDaypart } from '../context.js';
@@ -123,9 +124,12 @@ export function pickSystem() {
   const showLine = activeShow?.topic
     ? `\n\nCurrent show brief — follow this for every pick:\n${activeShow.topic}`
     : '';
+  const briefPoolLine = activeShow?.moods?.length
+    ? `\n\nSome candidates carry a "source" field of genre, energy, vibe, or eclectic — these were reserved from the show's brief pool specifically to give you on-brief variety beyond whatever your discovery tool returned. Prefer one of these when it fits, especially if your recent picks have felt similar to each other.`
+    : '';
   return `${settings.agentPersonaPreamble(persona, { rules: false })}
 
-You run the station as one continuous shift. The messages above are the live session.${djModeLine}${showLine}
+You run the station as one continuous shift. The messages above are the live session.${djModeLine}${showLine}${briefPoolLine}
 
 ${dj.PICKER_CRITERIA}`;
 }
@@ -135,6 +139,19 @@ function requestSystem() {
 
 The messages above are the live session — the last user turn is a listener request.`;
 }
+
+// With a show brief active, the picker gets exactly one discovery call
+// (COMMIT_AFTER_STEPS in sdk.js) and PICKER_CRITERIA #1 makes the brief's
+// genre/mood a hard constraint — but several discovery tools carry no
+// mood/genre signal at all (similarSongs is seed-similarity, topSongsByArtist
+// is a discography lookup, recentlyAdded/starredSongs/randomSongs are blind
+// library samples). If the model's one shot lands on one of those, the whole
+// candidate pool can be off-brief regardless of how well the prompt is
+// written — there's nothing on-brief in it to choose. Restrict step-0 tools
+// to the mood/genre-aware set whenever a brief is active; the agent always
+// has tools that can return brief-fitting candidates. No restriction when no
+// show is active (general rotation can use the full toolset).
+const MOOD_AWARE_TOOLS = ['searchLibrary', 'tracksByMood', 'tracksByEnergy', 'tracksLikeThis', 'searchByLyrics'];
 
 // Named agents — the picker and request-handler specs in one declarable block
 // each. `buildSystem` and `buildTools` resolve persona / per-call filters at
@@ -151,10 +168,26 @@ export const pickerAgent = defineAgent({
   maxSteps: 4,
   timeoutMs: 22000,
   buildSystem: () => pickSystem(),
-  buildTools: ({ recentIds, recentKeys, recentArtists }) => {
+  buildTools: async ({ recentIds, recentKeys, recentArtists, justPlayedArtists }) => {
     const activeShow = settings.resolveActiveShow();
     const { maxDurationSec, excludePatterns } = settings.getPickerConfig(activeShow);
-    const { tools, seen } = buildPickerTools({ recentIds, recentKeys, recentArtists, maxDurationSec, excludePatterns });
+    let briefPool: any[] = [];
+    if (activeShow?.moods?.length) {
+      const built = await pool.buildBriefPool({
+        moods: activeShow.moods,
+        vibeText: activeShow.vibe,
+        showId: activeShow.id,
+        recentTrackIds: recentIds,
+      });
+      briefPool = built.tracks;
+    }
+    const { tools, seen } = buildPickerTools({ recentIds, recentKeys, recentArtists, justPlayedArtists, maxDurationSec, excludePatterns, briefPool });
+    if (activeShow?.topic) {
+      const filtered = Object.fromEntries(
+        Object.entries(tools).filter(([name]) => MOOD_AWARE_TOOLS.includes(name)),
+      );
+      return { tools: filtered, extras: { seen } };
+    }
     return { tools, extras: { seen } };
   },
 });
@@ -215,12 +248,14 @@ async function pickViaAgent(queue, { wantLink }) {
   // do not exclude every real candidate before the picker sees it.
   const { ids: recentIds, keys: recentKeys } = queue.recentlyPlayed(windows.trackHours);
   const recentArtists = queue.recentArtistsSince(windows.artistHours);
+  const justPlayedArtists = queue.justPlayedArtistKeys();
 
   const { object, steps, toolCalls, extras } = await pickerAgent.run({
     messages: session.windowMessages(),
     recentIds,
     recentKeys,
     recentArtists,
+    justPlayedArtists,
   });
 
   const song = object?.id ? extras.seen.get(object.id) : null;

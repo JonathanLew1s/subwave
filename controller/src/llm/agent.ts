@@ -25,7 +25,7 @@ export interface AgentDefinition {
   kind: string;
   schema?: any;
   buildSystem: (args: any) => string;
-  buildTools?: (args: any) => { tools: any; extras?: any };
+  buildTools?: (args: any) => { tools: any; extras?: any } | Promise<{ tools: any; extras?: any }>;
   maxSteps?: number;
   timeoutMs?: number;
   temperature?: number;
@@ -59,7 +59,7 @@ export function defineAgent(def: AgentDefinition): DjAgentInstance {
     maxOutputTokens: def.maxOutputTokens,
     async run({ messages, ...toolArgs }) {
       const system = def.buildSystem(toolArgs);
-      const built = def.buildTools ? def.buildTools(toolArgs) : { tools: undefined, extras: undefined };
+      const built = def.buildTools ? await def.buildTools(toolArgs) : { tools: undefined, extras: undefined };
       const result = await djAgent({
         system,
         messages,

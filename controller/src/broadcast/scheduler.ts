@@ -20,6 +20,8 @@ import { agenticTick, skillCatalog } from '../skills/_agent.js';
 import { withTrace } from '../observability/events.js';
 import { isRadioPickable } from '../llm/tools.js';
 import * as settings from '../settings.js';
+import * as pool from '../music/pool.js';
+import { refreshPopularity } from '../music/popularity.js';
 
 const TARGET_POOL = 30;
 const MOOD_WEIGHT = 12;          // up to this many mood-tagged tracks per pool
@@ -58,28 +60,46 @@ async function refreshAutoPlaylistInner() {
   const mood = ctx.dominantMood;
   // Match the auto-DJ picker's window (dj-agent.pickViaAgent) — 12h.
   const recent = queue.recentlyPlayedIds(12);
-  // Apply the same hard excludes as the DJ agent — station-wide patterns
-  // (e.g. christmas, live, demo) must never appear in the fallback pool.
-  const { excludePatterns } = settings.getPickerConfig(ctx.activeShow);
 
-  const pool: any[] = [];
-  const fromSource: Record<string, number> = { mood: 0, playlist: 0, recent: 0, frequent: 0, starred: 0, random: 0 };
-  const take = (label: string, items: any[], cap: number) => {
+  // Auto-playlist is Liquidsoap's fallback source — it plays directly from
+  // this file (no picker/LLM in the loop) whenever the queue runs dry, so it
+  // must honour the same exclude patterns / duration cap as every other pick
+  // path. Without this, station-wide excludes (e.g. "demo", "live", holiday
+  // tracks) only applied to LLM-driven picks and a previously-built auto.m3u
+  // could keep airing excluded tracks indefinitely on underrun.
+  const activeShow = settings.resolveActiveShow();
+  const { maxDurationSec, excludePatterns } = settings.getPickerConfig(activeShow);
+
+  // When a mood is active, every source — not just the dedicated 'mood' and
+  // 'playlist' sources — must fit it. Without this, the auto-playlist's
+  // top-up sources (recent/frequent/starred/random, typically ~18/30 tracks)
+  // can hand Liquidsoap something completely off-brief on cold start /
+  // underrun (e.g. a "Country"-tagged track during a "focus" show).
+  await library.load();
+  const moods = activeShow?.moods || (mood ? [mood] : null);
+  const briefPoolResult = await pool.buildBriefPool({ moods, recentTrackIds: new Set() });
+  const briefIds = briefPoolResult.tracks.map((t: any) => t.id);
+  const moodIds = briefIds.length > 0 ? new Set(briefIds) : null;
+
+  const poolArray: any[] = [];
+  const fromSource: Record<string, number> = { 'brief-pool': 0, playlist: 0, recent: 0, frequent: 0, starred: 0, random: 0 };
+  const take = (label: string, items: any[], cap: number, { requireMood = false }: { requireMood?: boolean } = {}) => {
     let n = 0;
     for (const t of items) {
-      if (n >= cap || pool.length >= TARGET_POOL) break;
-      if (!t?.id || recent.has(t.id) || pool.find((p: any) => p.id === t.id)) continue;
-      if (!isRadioPickable(t.title ?? '', t.album, excludePatterns)) continue;
-      pool.push({ ...t, _source: label });
+      if (n >= cap || poolArray.length >= TARGET_POOL) break;
+      if (!t?.id || recent.has(t.id) || poolArray.find((p: any) => p.id === t.id)) continue;
+      if (t.duration && t.duration > maxDurationSec) continue;
+      if (!isRadioPickable(t.title ?? '', t.album, excludePatterns, t.genre)) continue;
+      if (requireMood && moodIds && !moodIds.has(t.id)) continue;
+      poolArray.push({ ...t, _source: label });
       fromSource[label]++;
       n++;
     }
   };
 
-  // 1. Mood-tagged from the LLM-built library (only if tagger has run).
-  await library.load();
-  if (mood) {
-    take('mood', shuffle(library.songsByMood(mood)), MOOD_WEIGHT);
+  // 1. Stratified brief-pool from the LLM-built library.
+  if (moods) {
+    take('brief-pool', shuffle(briefPoolResult.tracks), MOOD_WEIGHT);
   }
 
   // 2. Navidrome playlists whose name matches the mood — operator's hand curation.
@@ -104,7 +124,7 @@ async function refreshAutoPlaylistInner() {
   try {
     const recentAlbums = await subsonic.getRecentlyAddedAlbums({ size: 8 });
     const tracks = await tracksFromAlbums(shuffle(recentAlbums).slice(0, 4), 2, RECENT_WEIGHT * 2);
-    take('recent', tracks, RECENT_WEIGHT);
+    take('recent', tracks, RECENT_WEIGHT, { requireMood: true });
   } catch (err) {
     queue.log('error', `Recent-albums fetch failed: ${err.message}`);
   }
@@ -113,7 +133,7 @@ async function refreshAutoPlaylistInner() {
   try {
     const freqAlbums = await subsonic.getFrequentAlbums({ size: 8 });
     const tracks = await tracksFromAlbums(shuffle(freqAlbums).slice(0, 4), 2, FREQUENT_WEIGHT * 2);
-    take('frequent', tracks, FREQUENT_WEIGHT);
+    take('frequent', tracks, FREQUENT_WEIGHT, { requireMood: true });
   } catch (err) {
     queue.log('error', `Frequent-albums fetch failed: ${err.message}`);
   }
@@ -121,25 +141,25 @@ async function refreshAutoPlaylistInner() {
   // 5. Starred — hand-curated.
   try {
     const starred = shuffle(await subsonic.getStarred());
-    take('starred', starred, STARRED_WEIGHT);
+    take('starred', starred, STARRED_WEIGHT, { requireMood: true });
   } catch (err) {
     queue.log('error', `Starred fetch failed: ${err.message}`);
   }
 
   // 6. Top up with random to TARGET_POOL.
-  if (pool.length < TARGET_POOL) {
+  if (poolArray.length < TARGET_POOL) {
     try {
       const random = await subsonic.getRandomSongs({ size: TARGET_POOL });
-      take('random', random, TARGET_POOL);
+      take('random', random, TARGET_POOL, { requireMood: true });
     } catch (err) {
       queue.log('error', `Random fetch failed: ${err.message}`);
     }
   }
 
-  const lines = ['#EXTM3U', ...pool.map((t: any) => subsonic.getAnnotatedUri(t))];
+  const lines = ['#EXTM3U', ...poolArray.map((t: any) => subsonic.getAnnotatedUri(t))];
   await writeFile(config.liquidsoap.autoPlaylist, lines.join('\n'));
   queue.log('scheduler',
-    `Auto-playlist refreshed: ${pool.length} tracks (` +
+    `Auto-playlist refreshed: ${poolArray.length} tracks (` +
     Object.entries(fromSource).filter(([, v]) => v > 0).map(([k, v]) => `${k}=${v}`).join(' ') +
     `, mood=${mood || 'none'})`);
 }
@@ -266,12 +286,34 @@ async function cleanup() {
 }
 
 // ---------------------------------------------------------------------------
+// POPULARITY REFRESH
+// Backfills tracks.popularity_song / tracks.popularity_album from Navidrome's
+// custom tags (beets-derived). Cheap (~80 paginated /api/song requests for a
+// ~40k-track library) — run on every boot (self-heals after restarts/deploys
+// that miss the weekly tick) and weekly thereafter.
+// ---------------------------------------------------------------------------
+
+async function refreshPopularityScores() {
+  if (!config.navidrome.user || !config.navidrome.password) return;
+  try {
+    const count = await refreshPopularity();
+    queue.log('scheduler', `Popularity refresh: updated ${count} tracks`);
+  } catch (err: any) {
+    queue.log('error', `Popularity refresh failed: ${err.message}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // START
 // ---------------------------------------------------------------------------
 
 export function startScheduler() {
   // Initial run
   refreshAutoPlaylist().catch(err => queue.log('error', `Initial playlist failed: ${err.message}`));
+
+  // Popularity refresh on boot — self-heals if a pod restart missed the
+  // weekly cron tick below.
+  refreshPopularityScores().catch(err => queue.log('error', `Initial popularity refresh failed: ${err.message}`));
 
   // Auto-playlist refresh every 10 minutes
   cron.schedule(`*/${config.show.autoQueueRefreshMinutes} * * * *`, refreshAutoPlaylist);
@@ -290,6 +332,9 @@ export function startScheduler() {
 
   // Cleanup every hour
   cron.schedule('0 * * * *', cleanup);
+
+  // Popularity refresh weekly — Sunday 3am, picks up new beets tags / library additions.
+  cron.schedule('0 3 * * 0', refreshPopularityScores);
 
   queue.log('scheduler', `Scheduler started · skills: ${skillCatalog().map((s: any) => s.name).join(', ')}`);
 }

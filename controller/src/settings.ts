@@ -661,6 +661,23 @@ function normalizePersonaArray(raw: any) {
   return out.length ? out : null;
 }
 
+// Validates+dedupes a show's moods (1-3 entries from SHOW_MOODS). Back-compat:
+// pre-multi-mood shows stored a single `mood: string` — those are migrated to
+// `moods: [mood]` here so existing settings.json files load cleanly.
+function normalizeMoods(item: any): string[] | null {
+  const raw = Array.isArray(item.moods)
+    ? item.moods
+    : typeof item.mood === 'string' ? [item.mood] : [];
+  const out: string[] = [];
+  for (const m of raw) {
+    if (typeof m === 'string' && SHOW_MOODS.includes(m) && !out.includes(m)) {
+      out.push(m);
+      if (out.length >= 3) break;
+    }
+  }
+  return out.length ? out : null;
+}
+
 function normalizeShows(raw: any, personaIds: string[]) {
   if (!Array.isArray(raw)) return [];
   const seen = new Set<string>();
@@ -670,7 +687,8 @@ function normalizeShows(raw: any, personaIds: string[]) {
     const name = typeof item.name === 'string' ? item.name.trim().slice(0, 60) : '';
     if (!name) continue;
     if (!personaIds.includes(item.personaId)) continue; // drop dangling owner
-    if (!SHOW_MOODS.includes(item.mood)) continue;
+    const moods = normalizeMoods(item);
+    if (!moods) continue;
     let id = typeof item.id === 'string' && ID_RE.test(item.id) ? item.id : mintId('s_');
     if (seen.has(id)) id = mintId('s_');
     seen.add(id);
@@ -696,8 +714,9 @@ function normalizeShows(raw: any, personaIds: string[]) {
       id,
       name,
       topic: typeof item.topic === 'string' ? item.topic.trim().slice(0, 1000) : '',
+      vibe: typeof item.vibe === 'string' ? item.vibe.trim().slice(0, 300) : '',
       personaId: item.personaId,
-      mood: item.mood,
+      moods,
       themeId,
       excludePatterns,
     });
@@ -1275,11 +1294,23 @@ function validateShowsStrict(raw, personas, allowedThemeIds: Set<string>) {
     if (name.length < 1 || name.length > 60) throw new Error(`shows[${i}].name must be 1-60 chars`);
     const topic = String(item.topic ?? '').trim();
     if (topic.length > 1000) throw new Error(`shows[${i}].topic must be 0-1000 chars`);
+    const vibe = String(item.vibe ?? '').trim();
+    if (vibe.length > 300) throw new Error(`shows[${i}].vibe must be 0-300 chars`);
     if (!personaIds.includes(item.personaId)) {
       throw new Error(`shows[${i}].personaId must reference an existing persona`);
     }
-    if (!SHOW_MOODS.includes(item.mood)) {
-      throw new Error(`shows[${i}].mood must be one of: ${SHOW_MOODS.join(', ')}`);
+    if (!Array.isArray(item.moods) || item.moods.length < 1 || item.moods.length > 3) {
+      throw new Error(`shows[${i}].moods must be an array of 1-3 moods`);
+    }
+    const seenMoods = new Set<string>();
+    for (const m of item.moods) {
+      if (!SHOW_MOODS.includes(m)) {
+        throw new Error(`shows[${i}].moods must contain only: ${SHOW_MOODS.join(', ')}`);
+      }
+      if (seenMoods.has(m)) {
+        throw new Error(`shows[${i}].moods must not contain duplicates`);
+      }
+      seenMoods.add(m);
     }
     // Optional per-show theme override. Empty/missing means "fall back to the
     // station default while this show is on air". The allow-set is built once
@@ -1313,7 +1344,7 @@ function validateShowsStrict(raw, personas, allowedThemeIds: Set<string>) {
         return v;
       });
     }
-    return { id, name, topic, personaId: item.personaId, mood: item.mood, themeId, excludePatterns };
+    return { id, name, topic, vibe, personaId: item.personaId, moods: item.moods, themeId, excludePatterns };
   });
 }
 
@@ -1909,7 +1940,8 @@ export function resolveActiveShow(date = new Date(), s = get()) {
     id: show.id,
     name: show.name,
     topic: show.topic,
-    mood: show.mood,
+    vibe: typeof show.vibe === 'string' ? show.vibe : '',
+    moods: show.moods,
     // Empty string means "fall back to the station-wide default". The route
     // layer is responsible for resolving an empty/stale id against the live
     // theme registry; we just surface what the show declares.

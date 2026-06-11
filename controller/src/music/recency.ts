@@ -19,14 +19,30 @@ export interface CandidateFilterState {
   recentIds?: Set<string>;
   recentKeys?: Set<string>;
   recentArtists?: Set<string>;
+  justPlayedArtists?: Set<string>;
   seenIds?: Set<string>;
   artistCounts?: Map<string, number>;
   maxPerArtist?: number;
   cap?: number;
+  relaxArtists?: boolean;
 }
 
 export function artistKey(song: CandidateLike): string {
   return (song.artist || '').toLowerCase().trim();
+}
+
+// Splits off a collaborator/backing-band suffix so "Prince" and "Prince and
+// The Revolution" (or "John Lennon" / "John Lennon / Yoko Ono") resolve to the
+// same key. Without this, alternating between credit variants of the same
+// headline artist defeats the consecutive-artist check entirely — each pick
+// looks "new" relative to the immediately-previous track's exact credit string.
+const COLLAB_SPLIT_RE = /\s+(?:and the|&|feat\.?|ft\.?|featuring|with|\/|vs\.?)\s+/i;
+
+export function coreArtistKey(song: CandidateLike): string {
+  const full = artistKey(song);
+  const m = full.match(COLLAB_SPLIT_RE);
+  if (!m || m.index == null) return full;
+  return full.slice(0, m.index).trim();
 }
 
 export function trackKey(song: CandidateLike): string {
@@ -62,34 +78,63 @@ export function filterPickerCandidates<T extends CandidateLike>(
     recentIds = new Set<string>(),
     recentKeys = new Set<string>(),
     recentArtists = new Set<string>(),
+    justPlayedArtists = new Set<string>(),
     seenIds = new Set<string>(),
     artistCounts = new Map<string, number>(),
     maxPerArtist = Infinity,
     cap = Infinity,
+    relaxArtists = true,
   }: CandidateFilterState = {},
 ): T[] {
-  const modes = [
+  // Hard floor: never re-admit the artist that's currently (or just) playing,
+  // in any cascade mode below — unlike `recentArtists`, this is never relaxed
+  // under scarcity. An artist-homogeneous input list (e.g. tracksLikeThis
+  // seeded on the just-played track) legitimately contributes zero candidates
+  // here; other tools / the mood-pool reserve cover the pick instead.
+  let candidates = list || [];
+  if (justPlayedArtists.size) {
+    candidates = candidates.filter((song) => {
+      if (!song?.id) return true;
+      const key = artistKey(song);
+      const coreKey = coreArtistKey(song);
+      return !(
+        (key && justPlayedArtists.has(key)) ||
+        (coreKey && coreKey !== key && justPlayedArtists.has(coreKey))
+      );
+    });
+  }
+
+  const allModes = [
     { recentTracks: true, recentArtists: true },
-    { recentTracks: true, recentArtists: false },
+    { recentTracks: false, recentArtists: true },  // relax track recency before artist constraint
     { recentTracks: false, recentArtists: false },
   ];
+  // When relaxArtists is false, never fall through to a mode that drops the
+  // recentArtists exclusion — used when on-brief alternatives are already
+  // available so a same-artist candidate shouldn't be reintroduced.
+  const modes = relaxArtists ? allModes : allModes.filter((m) => m.recentArtists);
 
   for (const mode of modes) {
     const nextSeen = new Set(seenIds);
     const nextArtistCounts = new Map(artistCounts);
     const out: T[] = [];
 
-    for (const song of list || []) {
+    for (const song of candidates) {
       if (!song?.id || nextSeen.has(song.id)) continue;
       if (mode.recentTracks && recentIds.has(song.id)) continue;
       if (mode.recentTracks && recentKeys.has(trackKey(song))) continue;
 
       const key = artistKey(song);
-      if (mode.recentArtists && key && recentArtists.has(key)) continue;
-      if (key) {
-        const count = nextArtistCounts.get(key) || 0;
+      const coreKey = coreArtistKey(song);
+      if (mode.recentArtists && (
+        (key && recentArtists.has(key)) ||
+        (coreKey && coreKey !== key && recentArtists.has(coreKey))
+      )) continue;
+      const countKey = coreKey || key;
+      if (countKey) {
+        const count = nextArtistCounts.get(countKey) || 0;
         if (count >= maxPerArtist) continue;
-        nextArtistCounts.set(key, count + 1);
+        nextArtistCounts.set(countKey, count + 1);
       }
 
       nextSeen.add(song.id);

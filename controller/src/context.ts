@@ -199,7 +199,7 @@ export async function getFullContext() {
   const activeShow = resolveActiveShow(now);
 
   // Show > festival > weather > time, in that order of priority for mood.
-  const dominantMood = activeShow?.mood || festival?.mood || weather.mood || time.mood;
+  const dominantMood = activeShow?.moods?.[0] || festival?.mood || weather.mood || time.mood;
 
   // Live audience size, from the cached Icecast monitor. `count` is null when
   // it couldn't be read — callers treat that as "unknown" and stay quiet.

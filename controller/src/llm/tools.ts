@@ -11,7 +11,7 @@ import { z } from 'zod';
 import * as subsonic from '../music/subsonic.js';
 import * as library from '../music/library.js';
 import * as embeddings from '../music/embeddings.js';
-import { filterPickerCandidates } from '../music/recency.js';
+import { artistKey, coreArtistKey, filterPickerCandidates } from '../music/recency.js';
 
 // Compile a list of user-supplied exclude patterns into regexes. Each pattern
 // is treated as a case-insensitive phrase; word boundaries are added on
@@ -31,12 +31,16 @@ function buildExcludeRegexes(patterns: string[]): RegExp[] {
 // `patterns` is the effective list from settings.getPickerConfig() — pass it
 // explicitly so callers can resolve the correct station/show context once and
 // reuse across a whole candidate list rather than hitting settings N times.
-export function isRadioPickable(title: string, album: string | null | undefined, patterns: string[]): boolean {
+// Also matches against `genre` — lets a per-show excludePatterns entry (e.g.
+// "Hip-Hop") hard-block a genre regardless of how the LLM interprets the show
+// brief, instead of relying entirely on prompt-level enforcement.
+export function isRadioPickable(title: string, album: string | null | undefined, patterns: string[], genre: string | null | undefined = null): boolean {
   if (!patterns.length) return true;
   const regexes = buildExcludeRegexes(patterns);
   const t = title ?? '';
   const a = album ?? '';
-  return !regexes.some(re => re.test(t) || re.test(a));
+  const g = genre ?? '';
+  return !regexes.some(re => re.test(t) || re.test(a) || re.test(g));
 }
 
 function slim(s: any) {
@@ -48,6 +52,7 @@ function slim(s: any) {
     year: s.year || null,
     genre: s.genre || null,
     ...(s.duration != null ? { duration: Math.round(s.duration) } : {}),
+    ...(s._source ? { source: s._source } : {}),
   };
   // Surface measured tempo/key when known — from the song itself (library
   // sources) or a library lookup (Subsonic sources). Omitted when un-analysed
@@ -91,18 +96,34 @@ const MAX_PER_ARTIST = 2;
 // `maxDurationSec` and `excludePatterns` come from settings.getPickerConfig()
 // (station-wide or per-show override). Callers should resolve these once and
 // pass them in; defaults are applied here if absent for call-site safety.
+//
+// `briefPool` (optional) is a pre-built, stratified pool of tracks fitting
+// the active show's brief — genre/energy/vibe/eclectic slices drawn from the
+// mood-curated universe (music/pool.js buildBriefPool, see dj-agent.js
+// buildTools). With COMMIT_AFTER_STEPS=1 the agent gets exactly one discovery
+// call, and that call's seed/query is the model's choice — e.g.
+// tracksLikeThis(current) anchors on whatever's playing, not the show brief.
+// Reserving a few slots of every tool's results for briefPool means on-brief,
+// stratified candidates are present in the choice set regardless of which
+// tool or seed the model picked.
+const BRIEF_RESERVE = 4;
+
 export function buildPickerTools({
   recentIds = new Set<string>(),
   recentKeys = new Set<string>(),
   recentArtists = new Set<string>(),
+  justPlayedArtists = new Set<string>(),
   maxDurationSec = 600,
   excludePatterns = [] as string[],
+  briefPool = [] as any[],
 }: {
   recentIds?: Set<string>;
   recentKeys?: Set<string>;        // lowercased "title|artist" — backfilled entries lack ids
   recentArtists?: Set<string>;
+  justPlayedArtists?: Set<string>; // core artist key(s) of the current/previous track — never relaxed
   maxDurationSec?: number;
   excludePatterns?: string[];
+  briefPool?: any[];
 } = {}) {
   const seen = new Map<string, any>(); // id → slim song, accumulated across all tool calls
   const artistCounts = new Map<string, number>(); // artist key → songs already accepted into `seen`
@@ -114,17 +135,20 @@ export function buildPickerTools({
   // agent — see picker-latency notes in dj-agent.js. The seen map still
   // accumulates across the whole loop, so the agent's id space grows with
   // each tool call regardless.
-  const collect = (list: any, cap = 8) => {
+  const acceptInto = (list: any, n: number, { relaxArtists = true }: { relaxArtists?: boolean } = {}) => {
+    if (n <= 0) return [];
     const withinLength = (list || []).filter((s: any) =>
-      (!s.duration || s.duration <= maxDurationSec) && isRadioPickable(s.title ?? '', s.album, excludePatterns));
+      (!s.duration || s.duration <= maxDurationSec) && isRadioPickable(s.title ?? '', s.album, excludePatterns, s.genre));
     const accepted = filterPickerCandidates(shuffle(withinLength as any[]), {
       recentIds,
       recentKeys,
       recentArtists,
+      justPlayedArtists,
       seenIds: new Set(seen.keys()),
       artistCounts,
       maxPerArtist: MAX_PER_ARTIST,
-      cap,
+      cap: n,
+      relaxArtists,
     });
     const out: any[] = [];
     for (const s of accepted) {
@@ -132,6 +156,19 @@ export function buildPickerTools({
       seen.set(s.id, slimmed);
       out.push(slimmed);
     }
+    return out;
+  };
+
+  const collect = (list: any, cap = 10) => {
+    const out: any[] = [];
+    if (briefPool.length) {
+      out.push(...acceptInto(shuffle(briefPool), Math.min(BRIEF_RESERVE, cap)));
+    }
+    // If the brief-pool reserve already added on-brief alternatives to `seen`,
+    // don't let this tool's own results fall back to a same-recent-artist
+    // candidate via the recency cascade — only relax recentArtists here when
+    // this is the only source of candidates so far.
+    out.push(...acceptInto(list, cap - out.length, { relaxArtists: seen.size === 0 }));
     return out;
   };
 
@@ -159,7 +196,7 @@ export function buildPickerTools({
     }),
 
     similarSongs: tool({
-      description: 'Find songs similar to a given song id. Pass the currently-playing song id to keep the flow going.',
+      description: 'Find songs similar to a given song id. Use as one source of candidates — verify results fit the active show brief before committing. Do not use this as the only tool when a show genre is specified.',
       inputSchema: z.object({ songId: z.string() }),
       execute: async ({ songId }) => {
         try { return collect(await subsonic.getSimilarSongs(songId, { count: 20 })); }
@@ -168,10 +205,22 @@ export function buildPickerTools({
     }),
 
     topSongsByArtist: tool({
-      description: 'Top songs for a named artist — good for staying in an artist\'s orbit without repeating a track.',
+      description: 'Top songs for a named artist — good for staying in an artist\'s orbit without repeating a track. Refuses artists that played too recently — pick a different tool or artist in that case.',
       inputSchema: z.object({ artist: z.string() }),
       execute: async ({ artist }) => {
-        try { return collect(await subsonic.getTopSongs(artist, { count: 15 })); }
+        try {
+          // This tool's results are 100% one artist by construction. If that
+          // artist is in recentArtists, filterPickerCandidates' fallback
+          // cascade would relax the artist constraint (pass 3) and hand back
+          // exactly the artist we're trying to avoid — refuse up front instead
+          // so the agent's one discovery shot isn't spent on a dead end.
+          const key = artistKey({ artist });
+          const core = coreArtistKey({ artist });
+          if ((key && recentArtists.has(key)) || (core && recentArtists.has(core))) {
+            return { error: `${artist} played too recently — try a different artist or tool` };
+          }
+          return collect(await subsonic.getTopSongs(artist, { count: 15 }));
+        }
         catch (err) { return { error: err.message }; }
       },
     }),
@@ -204,7 +253,7 @@ export function buildPickerTools({
     }),
 
     tracksLikeThis: tool({
-      description: 'Tracks whose mood + lyrics + metadata embed closest to a seed track — the controller\'s own semantic similarity over the actual library. Prefer this to similarSongs when "more of this vibe" matters more than "more by this artist". Pass the currently-playing song id (best) OR a track title — a title is resolved to the matching track. Returns [] only if neither a song id nor a title match anything embedded.',
+      description: 'Tracks whose mood + lyrics + metadata embed closest to a seed track — the controller\'s own semantic similarity over the actual library. Prefer this to similarSongs when "more of this vibe" matters more than "more by this artist". Pass the currently-playing song id (best) OR a track title — a title is resolved to the matching track. Returns [] only if neither a song id nor a title match anything embedded. Use as one source of candidates — verify results fit the active show brief before committing.',
       inputSchema: z.object({
         songId: z.string().describe('a song id (preferred) or a track title'),
         k: z.number().int().min(1).max(50).default(20),

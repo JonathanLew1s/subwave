@@ -28,6 +28,7 @@ import { loadSecretsIntoEnv } from '../setup/secrets.js';
 import { loadSetupConfig } from '../setup/config.js';
 import { runAnalysisPass } from './analyze.js';
 import * as analyzer from './analyzer.js';
+import { refreshPopularity } from './popularity.js';
 
 function parseIntFlag(args: string[], name: string): number | undefined {
   const idx = args.indexOf(name);
@@ -112,6 +113,17 @@ async function main() {
       const pruned = db.pruneMissingTracks(liveIds);
       if (pruned > 0) {
         console.log(`[analyze] pruned ${pruned} orphaned tracks no longer in Navidrome`);
+      }
+    }
+
+    // Popularity pass — fetch track/album popularity from Navidrome custom tags
+    // after metadata walk completes.
+    if (config.navidrome.user && config.navidrome.password) {
+      try {
+        const count = await refreshPopularity();
+        console.log(`[analyze] popularity backfill complete: ${count} tracks`);
+      } catch (err: any) {
+        console.error('[analyze] popularity backfill failed:', err.message);
       }
     }
   }
