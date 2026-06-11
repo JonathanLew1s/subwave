@@ -21,6 +21,7 @@ import { withTrace } from '../observability/events.js';
 import { isRadioPickable } from '../llm/tools.js';
 import * as settings from '../settings.js';
 import * as pool from '../music/pool.js';
+import { refreshPopularity } from '../music/popularity.js';
 
 const TARGET_POOL = 30;
 const MOOD_WEIGHT = 12;          // up to this many mood-tagged tracks per pool
@@ -285,12 +286,34 @@ async function cleanup() {
 }
 
 // ---------------------------------------------------------------------------
+// POPULARITY REFRESH
+// Backfills tracks.popularity_song / tracks.popularity_album from Navidrome's
+// custom tags (beets-derived). Cheap (~80 paginated /api/song requests for a
+// ~40k-track library) — run on every boot (self-heals after restarts/deploys
+// that miss the weekly tick) and weekly thereafter.
+// ---------------------------------------------------------------------------
+
+async function refreshPopularityScores() {
+  if (!config.navidrome.user || !config.navidrome.password) return;
+  try {
+    const count = await refreshPopularity();
+    queue.log('scheduler', `Popularity refresh: updated ${count} tracks`);
+  } catch (err: any) {
+    queue.log('error', `Popularity refresh failed: ${err.message}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // START
 // ---------------------------------------------------------------------------
 
 export function startScheduler() {
   // Initial run
   refreshAutoPlaylist().catch(err => queue.log('error', `Initial playlist failed: ${err.message}`));
+
+  // Popularity refresh on boot — self-heals if a pod restart missed the
+  // weekly cron tick below.
+  refreshPopularityScores().catch(err => queue.log('error', `Initial popularity refresh failed: ${err.message}`));
 
   // Auto-playlist refresh every 10 minutes
   cron.schedule(`*/${config.show.autoQueueRefreshMinutes} * * * *`, refreshAutoPlaylist);
@@ -309,6 +332,9 @@ export function startScheduler() {
 
   // Cleanup every hour
   cron.schedule('0 * * * *', cleanup);
+
+  // Popularity refresh weekly — Sunday 3am, picks up new beets tags / library additions.
+  cron.schedule('0 3 * * 0', refreshPopularityScores);
 
   queue.log('scheduler', `Scheduler started · skills: ${skillCatalog().map((s: any) => s.name).join(', ')}`);
 }
