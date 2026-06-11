@@ -37,7 +37,7 @@ const VIBE_SLICE_SIZE = 10;
 const VIBE_K = 60;
 const ECLECTIC_SLICE_SIZE = 10;
 const POPULARITY_SLICE_SIZE = 12;
-const POPULARITY_FLOOR_PERCENTILE = 15;
+const POPULARITY_FLOOR_PERCENTILE = 30;
 
 function shuffle<T>(arr: T[]): T[] {
   return [...arr].sort(() => Math.random() - 0.5);
