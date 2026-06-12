@@ -26,6 +26,7 @@ import { recencyWindowsForLibrary } from '../music/recency.js';
 
 const TARGET_POOL = 30;
 const MOOD_WEIGHT = 12;          // up to this many mood-tagged tracks per pool
+const MOOD_LIBRARY_WEIGHT = 12;  // extra mood-tagged tracks beyond the brief-pool sample
 const PLAYLIST_WEIGHT = 6;       // mood-matched Navidrome playlists
 const RECENT_WEIGHT = 4;         // recently-added albums
 const FREQUENT_WEIGHT = 4;       // frequent / scrobble-favourite albums
@@ -112,6 +113,15 @@ async function refreshAutoPlaylistInner() {
   // 1. Stratified brief-pool from the LLM-built library.
   if (moods) {
     add('brief-pool', shuffle(briefPoolResult.tracks), MOOD_WEIGHT * 2);
+  }
+
+  // 1b. Direct mood-tagged library top-up — the same universe brief-pool
+  // samples from, but a fresh shuffle covering tracks brief-pool's
+  // stratified slices missed. This is the main source of pool depth when
+  // Navidrome usage history (recent/frequent/starred/random below) is thin
+  // or empty, e.g. operators who don't scrobble through Navidrome.
+  if (moodUniverse.length > 0) {
+    add('mood-library', shuffle(moodUniverse), MOOD_LIBRARY_WEIGHT * 2);
   }
 
   // 2. Navidrome playlists whose name matches the mood — operator's hand curation.
