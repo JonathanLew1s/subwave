@@ -79,8 +79,13 @@ async function refreshAutoPlaylistInner() {
   await library.load();
   const moods = activeShow?.moods || (mood ? [mood] : null);
   const briefPoolResult = await pool.buildBriefPool({ moods, recentTrackIds: new Set() });
-  const briefIds = briefPoolResult.tracks.map((t: any) => t.id);
-  const moodIds = briefIds.length > 0 ? new Set(briefIds) : null;
+  // moodIds gates the requireMood sources below — it must be the full
+  // mood-tagged universe (songsByMoods), not the small stratified sample in
+  // briefPoolResult.tracks. Checking membership against that ~50-track sample
+  // rejected nearly everything from recent/frequent/starred/random, leaving
+  // the auto-playlist pool dominated by the brief-pool tracks alone.
+  const moodUniverse = moods ? library.songsByMoods(moods) : [];
+  const moodIds = moodUniverse.length > 0 ? new Set(moodUniverse.map((t: any) => t.id)) : null;
 
   // Gather a deduped candidate pool ~2x TARGET_POOL — same per-source weights
   // (doubled) and filters as before, but no artist-level decisions are made
