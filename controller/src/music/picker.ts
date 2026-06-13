@@ -63,15 +63,25 @@ function analysisFor(t: any): { bpm: number | null; key: string | null } {
 // bpmCompat / keyCompat now live in ./mix.js (single source of truth, shared
 // with the DJ-mix transition features); imported above.
 
+// Blended popularity score (song-weighted, album as secondary) — same
+// weighting pool.ts uses for its popularity-ranked brief-pool slice.
+function popularityRaw(t: any): number {
+  return (t?.popularitySong || 0) * 0.8 + (t?.popularityAlbum || 0) * 0.2;
+}
+
 // Order the pool by a random base nudged up for tempo/harmonic compatibility
-// with the current track. Random stays dominant so the pool keeps its variety
-// and a NULL-analysis pool is indistinguishable from shuffle().
-function softRankByCompat(pool: any[], current: { bpm: number | null; key: string | null }): any[] {
-  if (current.bpm == null && current.key == null) return shuffle(pool);
+// with the current track, and (when preferPopularity) for popularity relative
+// to the rest of the pool. Random stays dominant so the pool keeps its variety
+// and a NULL-analysis, non-popularity-biased pool is indistinguishable from
+// shuffle().
+function softRankByCompat(pool: any[], current: { bpm: number | null; key: string | null }, preferPopularity = false): any[] {
+  if (!preferPopularity && current.bpm == null && current.key == null) return shuffle(pool);
+  const maxPop = preferPopularity ? Math.max(...pool.map(popularityRaw), 1e-6) : 1;
   return pool
     .map((t: any) => {
       const a = analysisFor(t);
-      const bonus = 0.4 * bpmCompat(current.bpm, a.bpm) + 0.3 * keyCompat(current.key, a.key);
+      let bonus = 0.4 * bpmCompat(current.bpm, a.bpm) + 0.3 * keyCompat(current.key, a.key);
+      if (preferPopularity) bonus += 0.5 * (popularityRaw(t) / maxPop);
       return { t, score: Math.random() + bonus };
     })
     .sort((x, y) => y.score - x.score)
@@ -100,8 +110,18 @@ async function tracksFromAlbums(albums: any[], perAlbum: number, max: number) {
   return out;
 }
 
-async function buildCandidates(mood: string | null | undefined, recentIds: Set<string>, recentArtists: Set<string>, currentTrack: any, rankTarget: { bpm: number | null; key: string | null } | null = null, justPlayedArtists: Set<string> = new Set()) {
+// Builds a balanced candidate pool from the same 7 sources (+3 similarity
+// signals) used for the live LLM pick. `poolSize` scales every per-source cap
+// proportionally (relative to CANDIDATE_CAP) and becomes the final pool's hard
+// cap — callers wanting a deeper pool (e.g. the auto-playlist's ~50-track
+// fallback) pass a larger value; the LLM picker uses the default. When
+// `preferPopularity` is set, the final ordering is biased toward
+// higher-popularity tracks (on top of the usual random/tempo/key re-rank) —
+// used when no mood is active so the fallback pool skews toward crowd-pleasers.
+export async function buildCandidates(mood: string | null | undefined, recentIds: Set<string>, recentArtists: Set<string>, currentTrack: any, rankTarget: { bpm: number | null; key: string | null } | null = null, justPlayedArtists: Set<string> = new Set(), poolSize: number = CANDIDATE_CAP, preferPopularity: boolean = false) {
   await library.load();
+  const scale = poolSize / CANDIDATE_CAP;
+  const scaledCap = (n: number) => Math.max(1, Math.round(n * scale));
   const pool: any[] = [];
   const sources: Record<string, number> = {};
   const add = (label: string, items: any[]) => {
@@ -116,7 +136,7 @@ async function buildCandidates(mood: string | null | undefined, recentIds: Set<s
       const similar = await subsonic.getSimilarSongs(currentTrack.id, {
         count: 20,
       });
-      add('similar', sampleWithRecentFallback(similar, recentIds, CAP_SIMILAR));
+      add('similar', sampleWithRecentFallback(similar, recentIds, scaledCap(CAP_SIMILAR)));
     } catch {}
   }
 
@@ -129,7 +149,7 @@ async function buildCandidates(mood: string | null | undefined, recentIds: Set<s
   if (currentTrack?.id) {
     try {
       const knn = library.tracksLikeThis(currentTrack.id, 15);
-      add('embedding-similar', sampleWithRecentFallback(knn, recentIds, CAP_EMBEDDING_SIMILAR));
+      add('embedding-similar', sampleWithRecentFallback(knn, recentIds, scaledCap(CAP_EMBEDDING_SIMILAR)));
     } catch {}
   }
 
@@ -143,7 +163,7 @@ async function buildCandidates(mood: string | null | undefined, recentIds: Set<s
     try {
       if (await subsonic.supportsSonicSimilarity()) {
         const sonic = await subsonic.getSonicSimilarTracks(currentTrack.id, { count: 20 });
-        add('sonic-similar', sampleWithRecentFallback(sonic, recentIds, CAP_SONIC_SIMILAR));
+        add('sonic-similar', sampleWithRecentFallback(sonic, recentIds, scaledCap(CAP_SONIC_SIMILAR)));
       }
     } catch {}
   }
@@ -151,7 +171,7 @@ async function buildCandidates(mood: string | null | undefined, recentIds: Set<s
   // 2. Mood-tagged library (LLM-built tags, may be sparse).
   if (mood) {
     const moodHits = shuffle(library.songsByMood(mood));
-    add('mood-library', sampleWithRecentFallback(moodHits, recentIds, CAP_MOOD_LIBRARY));
+    add('mood-library', sampleWithRecentFallback(moodHits, recentIds, scaledCap(CAP_MOOD_LIBRARY)));
   }
 
   // 3. Mood-matched Navidrome playlists — operator's hand curation.
@@ -168,7 +188,7 @@ async function buildCandidates(mood: string | null | undefined, recentIds: Set<s
           plTracks.push(...songs);
         } catch {}
       }
-      add('playlist', sampleWithRecentFallback(shuffle(plTracks), recentIds, CAP_PLAYLIST));
+      add('playlist', sampleWithRecentFallback(shuffle(plTracks), recentIds, scaledCap(CAP_PLAYLIST)));
     } catch {}
   }
 
@@ -181,7 +201,7 @@ async function buildCandidates(mood: string | null | undefined, recentIds: Set<s
       const albums = await subsonic.getRecentlyAddedAlbums({ size: 12 });
       return tracksFromAlbums(shuffle(albums), 3, 40);
     });
-    add('recent', sampleWithRecentFallback(shuffle(recentPool), recentIds, CAP_RECENT));
+    add('recent', sampleWithRecentFallback(shuffle(recentPool), recentIds, scaledCap(CAP_RECENT)));
   } catch {}
 
   // 5. Frequent albums — scrobble-backed favourites. Same wide-pool-then-
@@ -191,7 +211,7 @@ async function buildCandidates(mood: string | null | undefined, recentIds: Set<s
       const albums = await subsonic.getFrequentAlbums({ size: 12 });
       return tracksFromAlbums(shuffle(albums), 3, 40);
     });
-    add('frequent', sampleWithRecentFallback(shuffle(freqPool), recentIds, CAP_FREQUENT));
+    add('frequent', sampleWithRecentFallback(shuffle(freqPool), recentIds, scaledCap(CAP_FREQUENT)));
   } catch {}
 
   // 6. Similar-artist top songs — adjacency through Last.fm artist graph.
@@ -221,20 +241,20 @@ async function buildCandidates(mood: string | null | undefined, recentIds: Set<s
       );
       add(
         'similar-artist',
-        sampleWithRecentFallback(similarArtistTracks, recentIds, CAP_SIMILAR_ARTIST),
+        sampleWithRecentFallback(similarArtistTracks, recentIds, scaledCap(CAP_SIMILAR_ARTIST)),
       );
     } catch {}
   }
 
   // 7. Fallback if the pool is still thin — starred + random.
-  if (pool.length < 8) {
+  if (pool.length < scaledCap(8)) {
     try {
       const starred = await subsonic.getStarred();
-      add('starred', sampleWithRecentFallback(shuffle(starred), recentIds, 4));
+      add('starred', sampleWithRecentFallback(shuffle(starred), recentIds, scaledCap(4)));
     } catch {}
     try {
-      const random = await subsonic.getRandomSongs({ size: 10 });
-      add('random', sampleWithRecentFallback(random, recentIds, 4));
+      const random = await subsonic.getRandomSongs({ size: scaledCap(10) });
+      add('random', sampleWithRecentFallback(random, recentIds, scaledCap(4)));
     } catch {}
   }
 
@@ -253,13 +273,13 @@ async function buildCandidates(mood: string | null | undefined, recentIds: Set<s
   // current track's own analysis when no run is active.
   const curAnalysis = rankTarget
     || (currentTrack?.id ? analysisFor(currentTrack) : { bpm: null, key: null });
-  const final = filterPickerCandidates(softRankByCompat(pool, curAnalysis), {
+  const final = filterPickerCandidates(softRankByCompat(pool, curAnalysis, preferPopularity), {
     recentIds,
     recentArtists,
     justPlayedArtists,
     artistCounts: perArtist,
     maxPerArtist: MAX_PER_ARTIST,
-    cap: CANDIDATE_CAP,
+    cap: poolSize,
   });
 
   return { candidates: final, sources };

@@ -21,32 +21,11 @@ import { withTrace } from '../observability/events.js';
 import { isRadioPickable } from '../llm/tools.js';
 import * as settings from '../settings.js';
 import * as pool from '../music/pool.js';
+import * as picker from '../music/picker.js';
 import { refreshPopularity } from '../music/popularity.js';
 import { recencyWindowsForLibrary } from '../music/recency.js';
 
-const TARGET_POOL = 30;
-const MOOD_WEIGHT = 12;          // up to this many mood-tagged tracks per pool
-const MOOD_LIBRARY_WEIGHT = 12;  // extra mood-tagged tracks beyond the brief-pool sample
-const PLAYLIST_WEIGHT = 6;       // mood-matched Navidrome playlists
-const RECENT_WEIGHT = 4;         // recently-added albums
-const FREQUENT_WEIGHT = 4;       // frequent / scrobble-favourite albums
-const STARRED_WEIGHT = 6;        // hand-starred tracks
-
-function shuffle<T>(arr: T[]): T[] {
-  return [...arr].sort(() => Math.random() - 0.5);
-}
-
-async function tracksFromAlbums(albums: any[], perAlbum: number, max: number) {
-  const out: any[] = [];
-  for (const a of albums) {
-    if (out.length >= max) break;
-    try {
-      const songs = await subsonic.getAlbum(a.id);
-      out.push(...shuffle(songs).slice(0, perAlbum));
-    } catch {}
-  }
-  return out;
-}
+const TARGET_POOL = 50;
 
 // ---------------------------------------------------------------------------
 // AUTO-PLAYLIST REFRESH
@@ -59,9 +38,6 @@ export async function refreshAutoPlaylist() {
 
 async function refreshAutoPlaylistInner() {
   const ctx = await getFullContext();
-  const mood = ctx.dominantMood;
-  // Match the auto-DJ picker's window (dj-agent.pickViaAgent) — 12h.
-  const recent = queue.recentlyPlayedIds(12);
 
   // Auto-playlist is Liquidsoap's fallback source — it plays directly from
   // this file (no picker/LLM in the loop) whenever the queue runs dry, so it
@@ -72,120 +48,40 @@ async function refreshAutoPlaylistInner() {
   const activeShow = settings.resolveActiveShow();
   const { maxDurationSec, excludePatterns } = settings.getPickerConfig(activeShow);
 
-  // When a mood is active, every source — not just the dedicated 'mood' and
-  // 'playlist' sources — must fit it. Without this, the auto-playlist's
-  // top-up sources (recent/frequent/starred/random, typically ~18/30 tracks)
-  // can hand Liquidsoap something completely off-brief on cold start /
-  // underrun (e.g. a "Country"-tagged track during a "focus" show).
+  // Same candidate sources + weights as the live LLM picker
+  // (music/picker.ts buildCandidates), just a deeper pool (TARGET_POOL vs.
+  // CANDIDATE_CAP) since this fills an hour-long fallback playlist rather than
+  // a single pick. A show's declared mood drives the mood-tagged-library /
+  // mood-playlist sources, same as the picker; with no active show (no
+  // declared mood) those sources are skipped and the final ordering is biased
+  // toward higher-popularity tracks instead (preferPopularity), so the
+  // fallback playlist still skews toward crowd-pleasers rather than a flat
+  // shuffle of the whole library.
+  const showMood = activeShow?.moods?.[0] || null;
+  const preferPopularity = !showMood;
+
   await library.load();
-  const moods = activeShow?.moods || (mood ? [mood] : null);
-  const briefPoolResult = await pool.buildBriefPool({ moods, recentTrackIds: new Set() });
-  // moodIds gates the requireMood sources below — it must be the full
-  // mood-tagged universe (songsByMoods), not the small stratified sample in
-  // briefPoolResult.tracks. Checking membership against that ~50-track sample
-  // rejected nearly everything from recent/frequent/starred/random, leaving
-  // the auto-playlist pool dominated by the brief-pool tracks alone.
-  const moodUniverse = moods ? library.songsByMoods(moods) : [];
-  const moodIds = moodUniverse.length > 0 ? new Set(moodUniverse.map((t: any) => t.id)) : null;
+  const windows = recencyWindowsForLibrary(library.stats().distinctArtists);
+  const recentIds = queue.recentlyPlayedIds(windows.trackHours);
+  const recentArtists = queue.recentArtistsSince(windows.artistHours);
+  const justPlayedArtists = queue.justPlayedArtistKeys();
+  const currentTrack = queue.current?.track || queue.history[0]?.track || null;
 
-  // Gather a deduped candidate pool ~2x TARGET_POOL — same per-source weights
-  // (doubled) and filters as before, but no artist-level decisions are made
-  // here. buildSequencedPlaylist below picks the final TARGET_POOL tracks,
-  // ordering them so no two adjacent tracks share a coreArtistKey, using the
-  // same recency rules as the live picker (recency.ts).
-  const CANDIDATE_TARGET = TARGET_POOL * 2;
-  const candidates: any[] = [];
-  const seen = new Set<string>();
-  const add = (label: string, items: any[], cap: number, { requireMood = false }: { requireMood?: boolean } = {}) => {
-    let n = 0;
-    for (const t of items) {
-      if (n >= cap || candidates.length >= CANDIDATE_TARGET) break;
-      if (!t?.id || recent.has(t.id) || seen.has(t.id)) continue;
-      if (t.duration && t.duration > maxDurationSec) continue;
-      if (!isRadioPickable(t.title ?? '', t.album, excludePatterns, t.genre)) continue;
-      if (requireMood && moodIds && !moodIds.has(t.id)) continue;
-      seen.add(t.id);
-      candidates.push({ ...t, _source: label });
-      n++;
-    }
-  };
+  const { candidates: rawCandidates, sources } = await picker.buildCandidates(
+    showMood, recentIds, recentArtists, currentTrack, null, justPlayedArtists, TARGET_POOL, preferPopularity,
+  );
 
-  // 1. Stratified brief-pool from the LLM-built library.
-  if (moods) {
-    add('brief-pool', shuffle(briefPoolResult.tracks), MOOD_WEIGHT * 2);
-  }
-
-  // 1b. Direct mood-tagged library top-up — the same universe brief-pool
-  // samples from, but a fresh shuffle covering tracks brief-pool's
-  // stratified slices missed. This is the main source of pool depth when
-  // Navidrome usage history (recent/frequent/starred/random below) is thin
-  // or empty, e.g. operators who don't scrobble through Navidrome.
-  if (moodUniverse.length > 0) {
-    add('mood-library', shuffle(moodUniverse), MOOD_LIBRARY_WEIGHT * 2);
-  }
-
-  // 2. Navidrome playlists whose name matches the mood — operator's hand curation.
-  if (mood) {
-    try {
-      const playlists = await subsonic.getPlaylists();
-      const matched = playlists.filter((p: any) => p.name?.toLowerCase().includes(mood.toLowerCase()));
-      const tracks: any[] = [];
-      for (const pl of matched.slice(0, 2)) {
-        try {
-          const songs = await subsonic.getPlaylist(pl.id);
-          tracks.push(...songs);
-        } catch {}
-      }
-      add('playlist', shuffle(tracks), PLAYLIST_WEIGHT * 2);
-    } catch (err) {
-      queue.log('error', `Playlist fetch failed: ${err.message}`);
-    }
-  }
-
-  // 3. Recently-added albums — surfaces new music without any tagging.
-  try {
-    const recentAlbums = await subsonic.getRecentlyAddedAlbums({ size: 8 });
-    const tracks = await tracksFromAlbums(shuffle(recentAlbums).slice(0, 4), 2, RECENT_WEIGHT * 4);
-    add('recent', tracks, RECENT_WEIGHT * 2, { requireMood: true });
-  } catch (err) {
-    queue.log('error', `Recent-albums fetch failed: ${err.message}`);
-  }
-
-  // 4. Frequent albums — Navidrome's scrobble-backed favourites.
-  try {
-    const freqAlbums = await subsonic.getFrequentAlbums({ size: 8 });
-    const tracks = await tracksFromAlbums(shuffle(freqAlbums).slice(0, 4), 2, FREQUENT_WEIGHT * 4);
-    add('frequent', tracks, FREQUENT_WEIGHT * 2, { requireMood: true });
-  } catch (err) {
-    queue.log('error', `Frequent-albums fetch failed: ${err.message}`);
-  }
-
-  // 5. Starred — hand-curated.
-  try {
-    const starred = shuffle(await subsonic.getStarred());
-    add('starred', starred, STARRED_WEIGHT * 2, { requireMood: true });
-  } catch (err) {
-    queue.log('error', `Starred fetch failed: ${err.message}`);
-  }
-
-  // 6. Top up with random to CANDIDATE_TARGET.
-  if (candidates.length < CANDIDATE_TARGET) {
-    try {
-      const random = await subsonic.getRandomSongs({ size: CANDIDATE_TARGET });
-      add('random', random, CANDIDATE_TARGET, { requireMood: true });
-    } catch (err) {
-      queue.log('error', `Random fetch failed: ${err.message}`);
-    }
-  }
+  const filtered = rawCandidates.filter((c: any) =>
+    (!c.duration || c.duration <= maxDurationSec) && isRadioPickable(c.title ?? '', c.album, excludePatterns, c.genre));
+  const candidates = filtered.length > 0 ? filtered : rawCandidates;
 
   // Sequence the final playlist using the same recency rules as the live
   // picker — no two adjacent tracks share an artist, seeded from whatever the
   // live queue just played so the auto-playlist's first track doesn't repeat
   // it either.
-  const windows = recencyWindowsForLibrary(library.stats().distinctArtists);
   const poolArray = pool.buildSequencedPlaylist(candidates, TARGET_POOL, {
-    justPlayedArtists: queue.justPlayedArtistKeys(),
-    recentArtists: queue.recentArtistsSince(windows.artistHours),
+    justPlayedArtists,
+    recentArtists,
   });
 
   const fromSource: Record<string, number> = {};
@@ -196,7 +92,8 @@ async function refreshAutoPlaylistInner() {
   queue.log('scheduler',
     `Auto-playlist refreshed: ${poolArray.length} tracks (` +
     Object.entries(fromSource).filter(([, v]) => v > 0).map(([k, v]) => `${k}=${v}`).join(' ') +
-    `, mood=${mood || 'none'})`);
+    ` of ${Object.entries(sources).map(([k, v]) => `${k}=${v}`).join(' ')}` +
+    `, mood=${showMood || `none/popularity (${ctx.dominantMood || 'n/a'})`})`);
 }
 
 // ---------------------------------------------------------------------------
