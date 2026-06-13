@@ -64,6 +64,10 @@ DISABLE_POCKET_TTS = os.environ.get("DISABLE_POCKET_TTS", "").lower() in _truthy
 # worker's env via env_extra below).
 CHATTERBOX_HF_HOME = os.environ.get("CHATTERBOX_HF_HOME", "/opt/chatterbox/hf-cache")
 POCKET_HF_HOME = os.environ.get("POCKET_HF_HOME", "/opt/pocket-tts/hf-cache")
+# The analyzer only touches HF when CLAP embeddings are enabled
+# (ANALYZE_AUDIO_EMBEDDING=1 with a WITH_CLAP=1 image) and no local
+# CLAP_MODEL_PATH is given — transformers then pulls the CLAP weights here.
+ANALYZER_HF_HOME = os.environ.get("ANALYZER_HF_HOME", "/opt/analyzer/hf-cache")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -265,7 +269,7 @@ analyzer_worker = TtsWorker(
     name="analyze",
     python=ANALYZE_PYTHON,
     script=ANALYZE_WORKER,
-    env_extra={"ANALYZE_SECONDS": ANALYZE_SECONDS},
+    env_extra={"ANALYZE_SECONDS": ANALYZE_SECONDS, "HF_HOME": ANALYZER_HF_HOME},
 )
 
 
@@ -340,6 +344,15 @@ async def health():
             pocket_worker.ready_meta.get("voice_cloning") if pocket_worker.ready else None
         ),
         "analyze_loaded": analyzer_worker.ready,
+        # Whether the analyze worker can emit CLAP "sounds-like" audio
+        # embeddings — true only when the image was built WITH_CLAP=1 (the torch
+        # + transformers stack is present). The controller surfaces this so the
+        # admin UI warns to rebuild the sidecar *before* a fruitless run rather
+        # than after the fingerprint bar stays at 0. None until the worker is
+        # ready and has reported its capability.
+        "analyze_audio_capable": (
+            analyzer_worker.ready_meta.get("audio_embedding_capable") if analyzer_worker.ready else None
+        ),
     }
 
 
@@ -395,6 +408,10 @@ class AnalyzeRequest(BaseModel):
     # the sidecar's single-threaded compute; `url` stays as the fallback.
     url: str | None = None
     path: str | None = None
+    # Per-request CLAP opt-in (the controller's admin toggle). True makes the
+    # worker lazy-load CLAP even without ANALYZE_AUDIO_EMBEDDING in its env;
+    # None keeps the worker's env-driven default.
+    embed: bool | None = None
 
 
 @app.post("/analyze")
@@ -405,13 +422,21 @@ async def analyze(req: AnalyzeRequest):
         payload = {"id": "1", "url": req.url}
     else:
         raise HTTPException(400, "missing 'url' or 'path'")
+    if req.embed is not None:
+        payload["embed"] = req.embed
     msg = await analyzer_worker.request(payload)
     if not msg.get("ok"):
         raise HTTPException(500, msg.get("error") or "analyze failed")
-    return {
+    out = {
         "ok": True,
         "bpm": msg.get("bpm"),
         "key": msg.get("key"),
         "intro_ms": msg.get("intro_ms"),
         "confidence": msg.get("confidence"),
     }
+    # Optional CLAP audio embedding — present only when the worker has the model
+    # loaded (ANALYZE_AUDIO_EMBEDDING + CLAP weights). Pass it straight through;
+    # omitted otherwise so the controller's analyzer client maps it to null.
+    if "audio_embedding" in msg:
+        out["audio_embedding"] = msg["audio_embedding"]
+    return out

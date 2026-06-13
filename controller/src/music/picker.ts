@@ -26,6 +26,7 @@ const CAP_FREQUENT = 4;
 const CAP_SIMILAR_ARTIST = 4;
 const CAP_EMBEDDING_SIMILAR = 4;
 const CAP_SONIC_SIMILAR = 4;
+const CAP_AUDIO_SIMILAR = 4;
 
 // TTL cache for sources that don't change between picks. Without this, every
 // pick would re-fetch playlists, recent/frequent album lists and re-walk their
@@ -118,7 +119,9 @@ async function tracksFromAlbums(albums: any[], perAlbum: number, max: number) {
 // `preferPopularity` is set, the final ordering is biased toward
 // higher-popularity tracks (on top of the usual random/tempo/key re-rank) —
 // used when no mood is active so the fallback pool skews toward crowd-pleasers.
-export async function buildCandidates(mood: string | null | undefined, recentIds: Set<string>, recentArtists: Set<string>, currentTrack: any, rankTarget: { bpm: number | null; key: string | null } | null = null, justPlayedArtists: Set<string> = new Set(), poolSize: number = CANDIDATE_CAP, preferPopularity: boolean = false) {
+// `audioWaypoint`, when set (sonic journey, Phase 2), anchors the audio-KNN
+// source (1d) on the journey's destination vector instead of the current track.
+export async function buildCandidates(mood: string | null | undefined, recentIds: Set<string>, recentArtists: Set<string>, currentTrack: any, rankTarget: { bpm: number | null; key: string | null } | null = null, justPlayedArtists: Set<string> = new Set(), poolSize: number = CANDIDATE_CAP, preferPopularity: boolean = false, audioWaypoint: number[] | null = null) {
   await library.load();
   const scale = poolSize / CANDIDATE_CAP;
   const scaledCap = (n: number) => Math.max(1, Math.round(n * scale));
@@ -165,6 +168,29 @@ export async function buildCandidates(mood: string | null | undefined, recentIds
         const sonic = await subsonic.getSonicSimilarTracks(currentTrack.id, { count: 20 });
         add('sonic-similar', sampleWithRecentFallback(sonic, recentIds, scaledCap(CAP_SONIC_SIMILAR)));
       }
+    } catch {}
+  }
+
+  // 1d. Audio-KNN (CLAP) — "sounds like this" over the waveform itself (timbre
+  // / instrumentation / production / energy), blind to metadata. Complements
+  // embedding-similar: text catches same scene/era/theme, audio catches same
+  // sound — especially for thin-metadata or non-Western tracks where Last.fm +
+  // lyric coverage is sparse. Returns [] when the anchor has no audio vector
+  // (CLAP disabled / un-analysed), so it silently no-ops on a library without
+  // audio embeddings — behaviour is identical to today's.
+  //
+  // When a sonic journey (Phase 2, broadcast/dj-agent.ts) is active, the anchor
+  // is the journey's WAYPOINT vector rather than the current track — so the pool
+  // drifts toward the destination vibe instead of hugging the current sound.
+  if (audioWaypoint && audioWaypoint.length) {
+    try {
+      const knn = library.tracksByAudioVector(audioWaypoint, 15);
+      add('audio-journey', sampleWithRecentFallback(knn, recentIds, CAP_AUDIO_SIMILAR));
+    } catch {}
+  } else if (currentTrack?.id) {
+    try {
+      const knn = library.tracksLikeThisAudio(currentTrack.id, 15);
+      add('audio-similar', sampleWithRecentFallback(knn, recentIds, CAP_AUDIO_SIMILAR));
     } catch {}
   }
 
@@ -323,7 +349,7 @@ function summariseRecent(queue: any) {
 // { song, reason, source } or null. Used by broadcast/dj-agent.js.
 // ---------------------------------------------------------------------------
 
-export async function pickViaPool(queue, ctx, rankTarget: { bpm: number | null; key: string | null } | null = null) {
+export async function pickViaPool(queue, ctx, rankTarget: { bpm: number | null; key: string | null } | null = null, audioWaypoint: number[] | null = null) {
   await library.load();
   const windows = recencyWindowsForLibrary(library.stats().distinctArtists);
   const recentIds = queue.recentlyPlayedIds(windows.trackHours);
@@ -332,7 +358,7 @@ export async function pickViaPool(queue, ctx, rankTarget: { bpm: number | null; 
   const currentTrack = queue.current?.track || null;
   const recentTrackIds = queue.recentlyPlayedIds(24);
   const recentSimilarity = library.recentPicksSimilarity(recentTrackIds, 4);
-  const { candidates: rawCandidates, sources } = await buildCandidates(ctx.dominantMood, recentIds, recentArtists, currentTrack, rankTarget, justPlayedArtists);
+  const { candidates: rawCandidates, sources } = await buildCandidates(ctx.dominantMood, recentIds, recentArtists, currentTrack, rankTarget, justPlayedArtists, CANDIDATE_CAP, false, audioWaypoint);
 
   // Apply picker constraints from settings — duration cap and exclude patterns.
   // Per-show overrides apply here: a live-sets show can set excludePatterns=[]
@@ -384,6 +410,11 @@ export async function pickViaPool(queue, ctx, rankTarget: { bpm: number | null; 
           key: a.key ?? undefined,
           duration: c.duration ? Math.round(c.duration) : undefined,
           source: c._source || null,
+          // Cosine similarity to the current track for the KNN sources
+          // (embedding-similar / audio-similar). Omitted for the other sources,
+          // which carry no similarity score. Lets the pick reason lean on "very
+          // close match" vs "loose neighbour".
+          similarity: c._similarity != null ? Math.round(c._similarity * 100) / 100 : undefined,
         };
       }),
       recentPlays,

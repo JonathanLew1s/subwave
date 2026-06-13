@@ -13,7 +13,6 @@
 
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { existsSync, mkdirSync, createWriteStream } from 'node:fs';
-import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { config } from '../config.js';
 import * as subsonic from './subsonic.js';
@@ -23,6 +22,24 @@ export interface AnalysisResult {
   musicalKey: string | null;
   introMs: number | null;
   confidence: number | null;
+  // CLAP audio embedding (512 floats) when the backend has the model loaded
+  // (ANALYZE_AUDIO_EMBEDDING=1 + CLAP weights). null otherwise — every consumer
+  // treats null as "no audio vector this pass", so a backend without CLAP is
+  // byte-for-byte today's behaviour.
+  audioEmbedding: number[] | null;
+}
+
+// Coerce the worker's audio_embedding field to a clean number[] or null. The
+// worker omits it entirely when CLAP isn't loaded; defend against a malformed
+// or wrong-length array rather than letting it reach upsertTrackAudioVector.
+function parseAudioEmbedding(v: unknown): number[] | null {
+  if (!Array.isArray(v) || v.length === 0) return null;
+  const out: number[] = [];
+  for (const x of v) {
+    if (typeof x !== 'number' || !Number.isFinite(x)) return null;
+    out.push(x);
+  }
+  return out;
 }
 
 // Cap the download so we don't pull whole albums of bytes for a short
@@ -96,9 +113,16 @@ function startWorker(): Promise<void> {
   return booting;
 }
 
+// Per-request analysis options. `embed: true` asks the backend to (lazy-load
+// and) run CLAP for this track even when the backend's own env doesn't enable
+// it — the admin-toggle path. Omitted → the backend's env-driven default.
+export interface AnalyzeRequestOpts {
+  embed?: boolean;
+}
+
 // Write a request to the local stdio worker and resolve its response. The
 // request carries either `url` (worker downloads) or `path` (already-local).
-function localRequest(req: { url: string } | { path: string }): Promise<AnalysisResult> {
+function localRequest(req: ({ url: string } | { path: string }) & AnalyzeRequestOpts): Promise<AnalysisResult> {
   const id = `a${++reqSeq}`;
   return new Promise<AnalysisResult>((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -112,6 +136,7 @@ function localRequest(req: { url: string } | { path: string }): Promise<Analysis
           musicalKey: msg.key ?? null,
           introMs: msg.intro_ms ?? null,
           confidence: msg.confidence ?? null,
+          audioEmbedding: parseAudioEmbedding(msg.audio_embedding),
         }),
       reject,
       timer,
@@ -120,19 +145,23 @@ function localRequest(req: { url: string } | { path: string }): Promise<Analysis
   });
 }
 
-async function analyzeViaLocal(url: string): Promise<AnalysisResult> {
+async function analyzeViaLocal(url: string, opts: AnalyzeRequestOpts = {}): Promise<AnalysisResult> {
   if (!ready) await startWorker();
-  return localRequest({ url });
+  return localRequest({ url, ...opts });
 }
 
-async function analyzeViaLocalPath(path: string): Promise<AnalysisResult> {
+async function analyzeViaLocalPath(path: string, opts: AnalyzeRequestOpts = {}): Promise<AnalysisResult> {
   if (!ready) await startWorker();
-  return localRequest({ path });
+  return localRequest({ path, ...opts });
 }
 
 // ---------------------------------------------------------------------------
 // Sidecar backend
 // ---------------------------------------------------------------------------
+
+// Last sidecar /health read of the CLAP capability. null = unknown (not yet
+// probed, or the field is absent on an old sidecar); true/false once known.
+let _sidecarAudioCapable: boolean | null = null;
 
 async function sidecarReachable(): Promise<boolean> {
   const url = config.ttsHeavy.url;
@@ -143,8 +172,12 @@ async function sidecarReachable(): Promise<boolean> {
     const res = await fetch(`${url}/health`, { signal: ac.signal });
     clearTimeout(t);
     if (!res.ok) return false;
-    const body = (await res.json()) as { ok?: boolean; engines?: string[] };
-    return !!body.ok && Array.isArray(body.engines) && body.engines.includes('analyze');
+    const body = (await res.json()) as { ok?: boolean; engines?: string[]; analyze_audio_capable?: boolean | null };
+    const reachable = !!body.ok && Array.isArray(body.engines) && body.engines.includes('analyze');
+    if (reachable) {
+      _sidecarAudioCapable = typeof body.analyze_audio_capable === 'boolean' ? body.analyze_audio_capable : null;
+    }
+    return reachable;
   } catch {
     return false;
   }
@@ -152,7 +185,7 @@ async function sidecarReachable(): Promise<boolean> {
 
 // POST the sidecar a request body of either {url} (it downloads) or {path}
 // (a file on the shared volume the controller pre-fetched).
-async function sidecarRequest(body: { url: string } | { path: string }): Promise<AnalysisResult> {
+async function sidecarRequest(body: ({ url: string } | { path: string }) & AnalyzeRequestOpts): Promise<AnalysisResult> {
   const base = config.ttsHeavy.url;
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), config.analyzer.requestTimeoutMs);
@@ -166,18 +199,24 @@ async function sidecarRequest(body: { url: string } | { path: string }): Promise
     if (!res.ok) throw new Error(`tts-heavy /analyze ${res.status}: ${await res.text().catch(() => '')}`);
     const resBody = (await res.json()) as any;
     if (!resBody.ok) throw new Error(resBody.error || 'analysis failed');
-    return { bpm: resBody.bpm ?? null, musicalKey: resBody.key ?? null, introMs: resBody.intro_ms ?? null, confidence: resBody.confidence ?? null };
+    return {
+      bpm: resBody.bpm ?? null,
+      musicalKey: resBody.key ?? null,
+      introMs: resBody.intro_ms ?? null,
+      confidence: resBody.confidence ?? null,
+      audioEmbedding: parseAudioEmbedding(resBody.audio_embedding),
+    };
   } finally {
     clearTimeout(t);
   }
 }
 
-function analyzeViaSidecar(url: string): Promise<AnalysisResult> {
-  return sidecarRequest({ url });
+function analyzeViaSidecar(url: string, opts: AnalyzeRequestOpts = {}): Promise<AnalysisResult> {
+  return sidecarRequest({ url, ...opts });
 }
 
-function analyzeViaSidecarPath(path: string): Promise<AnalysisResult> {
-  return sidecarRequest({ path });
+function analyzeViaSidecarPath(path: string, opts: AnalyzeRequestOpts = {}): Promise<AnalysisResult> {
+  return sidecarRequest({ path, ...opts });
 }
 
 // ---------------------------------------------------------------------------
@@ -203,15 +242,32 @@ export function backendLabel(): string {
   return _backend || 'none';
 }
 
+// Whether the active backend can emit CLAP "sounds-like" audio embeddings right
+// now. null = unknown (local backend — we don't probe its venv; or sidecar not
+// yet reached); false = sidecar reachable but built without the CLAP stack
+// (WITH_CLAP=0) — the signal the admin UI turns into a "rebuild the sidecar"
+// warning. Only meaningful for the sidecar backend.
+export function audioEmbeddingAvailable(): boolean | null {
+  return _backend === 'sidecar' ? _sidecarAudioCapable : null;
+}
+
+// Re-read sidecar /health so capability reflects a sidecar rebuilt under a
+// long-lived controller (resolveBackend caches the backend *choice* forever,
+// but CLAP support flips when the operator rebuilds with WITH_CLAP=1). Cheap;
+// driven on the coverage staleness cadence.
+export async function refreshCapabilities(): Promise<void> {
+  if ((await resolveBackend()) === 'sidecar') await sidecarReachable();
+}
+
 // Analyse one track by id. Throws on failure — the caller (analyze pass) logs
 // and moves on, leaving the row NULL so it's retried on the next run. This is
 // the URL path: the backend fetches the audio itself. Kept as the fallback
 // for the prefetch pipeline (see analyzePath / downloadCapped below).
-export async function analyze(songId: string): Promise<AnalysisResult> {
+export async function analyze(songId: string, opts: AnalyzeRequestOpts = {}): Promise<AnalysisResult> {
   const backend = await resolveBackend();
   if (!backend) throw new Error('no analysis backend available');
   const url = subsonic.getRawStreamUrl(songId);
-  return backend === 'sidecar' ? analyzeViaSidecar(url) : analyzeViaLocal(url);
+  return backend === 'sidecar' ? analyzeViaSidecar(url, opts) : analyzeViaLocal(url, opts);
 }
 
 // Download a track's audio to a capped temp file on the shared state volume
@@ -237,25 +293,22 @@ export async function downloadCapped(songId: string): Promise<string> {
     if (!res.ok || !res.body) {
       throw new Error(`download ${res.status}: ${await res.text().catch(() => '')}`);
     }
-    // Stream the body to disk, aborting once we've pulled the byte cap — a few
-    // MB covers the analysis window for any common codec.
+    // Stream the body to disk, stopping once we've pulled the byte cap — a few
+    // MB covers the analysis window for any common codec. A capped async
+    // generator feeds pipeline (which handles backpressure and tears the source
+    // down when we return early). The previous approach — a `data` listener
+    // that called src.destroy() alongside pipeline — deadlocked: attaching the
+    // listener flips the web-backed Readable into flowing mode and races the
+    // pipe, so pipeline() never resolves and every download hangs.
     let read = 0;
-    const out = createWriteStream(dest);
-    const src = Readable.fromWeb(res.body as any);
-    src.on('data', (chunk: Buffer) => {
-      read += chunk.length;
-      if (read >= ANALYZE_MAX_BYTES) {
-        src.destroy();
-        ac.abort();
+    async function* capped() {
+      for await (const chunk of res.body as any) {
+        read += chunk.length;
+        yield chunk;
+        if (read >= ANALYZE_MAX_BYTES) return; // enough audio for the window
       }
-    });
-    try {
-      await pipeline(src, out);
-    } catch (err: any) {
-      // A deliberate cap-abort closes the stream mid-flight; that's not a
-      // failure as long as we wrote some bytes.
-      if (read === 0) throw err;
     }
+    await pipeline(capped(), createWriteStream(dest));
     if (read === 0) throw new Error('downloaded empty audio');
     return dest;
   } finally {
@@ -266,10 +319,10 @@ export async function downloadCapped(songId: string): Promise<string> {
 // Analyse a track from an already-local file on the shared volume (produced
 // by downloadCapped). Same backend resolution as analyze(), but hands the
 // path over instead of a url so the backend skips its own fetch.
-export async function analyzePath(localPath: string): Promise<AnalysisResult> {
+export async function analyzePath(localPath: string, opts: AnalyzeRequestOpts = {}): Promise<AnalysisResult> {
   const backend = await resolveBackend();
   if (!backend) throw new Error('no analysis backend available');
-  return backend === 'sidecar' ? analyzeViaSidecarPath(localPath) : analyzeViaLocalPath(localPath);
+  return backend === 'sidecar' ? analyzeViaSidecarPath(localPath, opts) : analyzeViaLocalPath(localPath, opts);
 }
 
 export function shutdown(): void {

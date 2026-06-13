@@ -4,7 +4,9 @@
 // FreqBand tuner above a horizontal pager whose five "stations" are
 // Shows / Timeline / LIVE / Booth / Request, with LIVE dead-centre as home.
 // Swipe (or tap a band stop) to tune across sections; the needle tracks the
-// scroll. Themes open in a bottom sheet from the palette icon, off-band.
+// scroll. The TransportBar is docked below the pager so the player stays
+// visible on every band stop, bottom-nav style. Themes open in a bottom sheet
+// from the palette icon, off-band.
 //
 // Render-path notes: the pager's scroll drives the FreqBand needle through a
 // native-driver Animated.Value (no per-frame React state), and the four
@@ -26,6 +28,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Sheet } from '@/components/ui/Sheet';
 import { useStation } from '@/config/StationContext';
+import { useConnectivity } from '@/hooks/useConnectivity';
 import { useCoverColors } from '@/hooks/useCoverColors';
 import { useNowPlayingInfo } from '@/hooks/useNowPlayingInfo';
 import { usePlayer } from '@/hooks/usePlayer';
@@ -41,6 +44,7 @@ import type {
 } from '@/lib/types';
 import { useTheme } from '@/theme/ThemeContext';
 import CenterStage from './CenterStage';
+import ConnectionBanner from './ConnectionBanner';
 import FreqBand, { type BandStop } from './FreqBand';
 import PagePanel from './PagePanel';
 import TopBar from './TopBar';
@@ -127,7 +131,12 @@ export default function PlayerScreen() {
   const { api } = useStation();
   const { colors } = useTheme();
 
-  const { tunedIn, status, volume, setVolume, tune, stop, toggleMute, muted } = usePlayer(api);
+  const { isConnected } = useConnectivity();
+  const { tunedIn, status, volume, setVolume, tune, stop, toggleMute, muted } = usePlayer(
+    api,
+    1,
+    isConnected,
+  );
 
   const {
     nowPlaying,
@@ -257,6 +266,13 @@ export default function PlayerScreen() {
           onOpenThemes={() => setThemesOpen(true)}
         />
 
+        <ConnectionBanner
+          isConnected={isConnected}
+          streamOnline={streamOnline}
+          tunedIn={tunedIn}
+          status={status}
+        />
+
         <FreqBand
           pages={PAGES}
           active={active}
@@ -296,19 +312,6 @@ export default function PlayerScreen() {
                     onOpenTimeline={openTimeline}
                   />
                   <Waveform tunedIn={tunedIn} progress={progress} visible={active === HOME_INDEX} />
-                  <TransportBar
-                    tunedIn={tunedIn}
-                    status={status}
-                    onTune={tune}
-                    offline={offline}
-                    volume={volume}
-                    setVolume={setVolume}
-                    muted={muted}
-                    onToggleMute={toggleMute}
-                    latencyMs={signal.latencyMs}
-                    signalQuality={signal.quality}
-                    listeners={listenerCount}
-                  />
                 </View>
               </View>
               <View style={{ width: pagerW }}>
@@ -322,6 +325,22 @@ export default function PlayerScreen() {
             </Animated.ScrollView>
           ) : null}
         </View>
+
+        {/* Persistent transport — lives below the pager so the player stays
+            docked at the foot of every band stop, like a bottom nav. */}
+        <TransportBar
+          tunedIn={tunedIn}
+          status={status}
+          onTune={tune}
+          offline={offline}
+          volume={volume}
+          setVolume={setVolume}
+          muted={muted}
+          onToggleMute={toggleMute}
+          latencyMs={signal.latencyMs}
+          signalQuality={signal.quality}
+          listeners={listenerCount}
+        />
       </SafeAreaView>
 
       <Sheet open={themesOpen} onClose={() => setThemesOpen(false)} title="Theme">

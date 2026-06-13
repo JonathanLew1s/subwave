@@ -116,6 +116,7 @@ export function buildPickerTools({
   maxDurationSec = 600,
   excludePatterns = [] as string[],
   briefPool = [] as any[],
+  audioWaypoint = null,
 }: {
   recentIds?: Set<string>;
   recentKeys?: Set<string>;        // lowercased "title|artist" — backfilled entries lack ids
@@ -124,6 +125,10 @@ export function buildPickerTools({
   maxDurationSec?: number;
   excludePatterns?: string[];
   briefPool?: any[];
+  // The active sonic journey's current waypoint vector (broadcast/dj-agent.ts).
+  // When present, the tracksTowardJourney tool below is registered, closing
+  // over it — the agent never sees the raw vector, only the tracks near it.
+  audioWaypoint?: number[] | null;
 } = {}) {
   const seen = new Map<string, any>(); // id → slim song, accumulated across all tool calls
   const artistCounts = new Map<string, number>(); // artist key → songs already accepted into `seen`
@@ -225,6 +230,19 @@ export function buildPickerTools({
       },
     }),
 
+    songsByGenre: tool({
+      description: 'Songs from a library genre tag, fuzzy-matched ("turkish" finds "Turkish Pop"). Use for language/country/style asks — "play something Turkish" — that searchLibrary cannot reach: genre lives in tags, not titles.',
+      inputSchema: z.object({ genre: z.string().describe('a genre, language, or country word, e.g. "jazz", "turkish", "punjabi"') }),
+      execute: async ({ genre }) => {
+        try {
+          const name = await subsonic.resolveGenreName(genre);
+          if (!name) return { error: `no library genre matching "${genre}"` };
+          return collect(await subsonic.getSongsByGenre(name, { count: 50 }));
+        }
+        catch (err) { return { error: err.message }; }
+      },
+    }),
+
     tracksByMood: tool({
       description: 'Songs tagged with a mood: energetic, calm, reflective, celebratory, romantic, spiritual, focus, workout, driving, cooking, rainy, sunny, night, morning, evening, festival, cultural. Optionally constrain by energy level (low|medium|high).',
       inputSchema: z.object({
@@ -260,6 +278,18 @@ export function buildPickerTools({
       }),
       execute: async ({ songId, k }) => {
         try { await library.load(); return collect(library.tracksLikeThis(songId, k)); }
+        catch (err) { return { error: err.message }; }
+      },
+    }),
+
+    tracksThatSoundLikeThis: tool({
+      description: 'Tracks whose ACTUAL SOUND (timbre, instrumentation, production, energy — a CLAP audio embedding of the waveform) is closest to a seed track. Unlike tracksLikeThis (which compares mood/lyrics/metadata), this is blind to tags and metadata, so it shines for instrumentals, non-English tracks, or anything with thin Last.fm coverage. Pass the currently-playing song id (best) OR a track title. Returns [] only when neither matches anything with an audio embedding (audio analysis not enabled / not yet run).',
+      inputSchema: z.object({
+        songId: z.string().describe('a song id (preferred) or a track title'),
+        k: z.number().int().min(1).max(50).default(20),
+      }),
+      execute: async ({ songId, k }) => {
+        try { await library.load(); return collect(library.tracksLikeThisAudio(songId, k)); }
         catch (err) { return { error: err.message }; }
       },
     }),
@@ -314,6 +344,21 @@ export function buildPickerTools({
         catch (err) { return { error: err.message }; }
       },
     }),
+
+    // Only registered while a sonic journey is active (the event message tells
+    // the agent when that is). Closes over the journey's current waypoint, so
+    // calling it returns the tracks that carry the sound one step along the
+    // arc toward the destination vibe.
+    ...(audioWaypoint && audioWaypoint.length ? {
+      tracksTowardJourney: tool({
+        description: 'Tracks nearest the active sonic journey\'s CURRENT waypoint — the station is mid-arc, drifting its sound toward a destination vibe over the next few picks. When the event says a journey is active, call this and strongly prefer one of its tracks: each one moves the sound a step along the arc. Takes no input.',
+        inputSchema: z.object({}),
+        execute: async () => {
+          try { await library.load(); return collect(library.tracksByAudioVector(audioWaypoint, 20)); }
+          catch (err) { return { error: err.message }; }
+        },
+      }),
+    } : {}),
   };
 
   return { tools, seen };

@@ -14,6 +14,7 @@ import { tagBatch, TAGGER_BATCH_SYSTEM } from '../music/tagger-core.js';
 import { promptVocabHash } from '../music/embeddings.js';
 import { activeModelLabel } from '../llm/provider.js';
 import { queue } from '../broadcast/queue.js';
+import { tagger, startAnalyzer } from '../broadcast/tagger.js';
 
 export const router = express.Router();
 
@@ -172,6 +173,21 @@ router.get('/library/coverage', requireAdmin, async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// POST /library/analyze — kick off the standalone analysis pass as a
+// background child (the admin "Analyze audio" button). Runs bpm/key/intro for
+// un-analysed tracks and — when audio embeddings are enabled via the settings
+// toggle or ANALYZE_AUDIO_EMBEDDING — backfills CLAP vectors for tracks that
+// lack one (--audio). Shares the tagger's single-flight state: poll /settings
+// (tagger.running / tagger.mode) for progress, stop via /tag-library/stop.
+// ---------------------------------------------------------------------------
+router.post('/library/analyze', requireAdmin, (req, res) => {
+  if (tagger.running) return res.status(409).json({ error: 'a tagger/analyzer run is already active', tagger });
+  const limit = parseIntSafe(req.body?.limit, null);
+  startAnalyzer({ limit: limit ?? undefined, audio: true });
+  res.json({ ok: true, tagger });
+});
+
+// ---------------------------------------------------------------------------
 // POST /library/retag — single-track refresh through the bulk pipeline.
 // Body: { id, title?, artist?, album?, year?, genre? }
 //
@@ -284,6 +300,105 @@ router.post('/library/retag', requireAdmin, async (req, res) => {
     res.json({ id, moods, energy, taggedAt: tagged?.taggedAt });
   } catch (err: any) {
     queue.log('error', `/library/retag failed: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /library/manual-tag — operator-set tags, no LLM involved.
+// Body: { id, moods: string[], energy?: 'low'|'medium'|'high'|null,
+//         applyToAlbum?: boolean }
+//
+// `moods: []` clears the tags entirely (track returns to the untagged pool).
+// `applyToAlbum` resolves the whole album server-side from the track id
+// (subsonic.getSong → albumId → getAlbum) and applies the same tags to every
+// track — this is the "tag an album/folder for targeted queuing" path
+// (discussion #336). Moods are restricted to settings.SHOW_MOODS so manual
+// rows feed songsByMood()/MOOD_NEIGHBOURS exactly like LLM-tagged ones.
+// ---------------------------------------------------------------------------
+router.post('/library/manual-tag', requireAdmin, async (req, res) => {
+  const id = req.body?.id;
+  if (!id || typeof id !== 'string') return res.status(400).json({ error: 'id is required' });
+  const moods = req.body?.moods;
+  if (!Array.isArray(moods) || moods.some((m: any) => typeof m !== 'string')) {
+    return res.status(400).json({ error: 'moods must be an array of strings' });
+  }
+  if (moods.length > 3) return res.status(400).json({ error: 'at most 3 moods per track' });
+  const unknown = moods.filter((m: string) => !settings.SHOW_MOODS.includes(m));
+  if (unknown.length) {
+    return res.status(400).json({ error: `unknown mood(s): ${unknown.join(', ')}` });
+  }
+  const energy = req.body?.energy ?? null;
+  if (energy !== null && !['low', 'medium', 'high'].includes(energy)) {
+    return res.status(400).json({ error: "energy must be 'low', 'medium', 'high' or null" });
+  }
+  const applyToAlbum = req.body?.applyToAlbum === true;
+  const clearing = moods.length === 0;
+
+  try {
+    await library.load();
+
+    // Resolve the seed track — Subsonic first (carries albumId), library-db
+    // row as fallback so already-indexed tracks work even if Navidrome misses.
+    let song: any = null;
+    try { song = await subsonic.getSong(id); } catch {}
+    if (!song) {
+      const row = db.getTrack(id);
+      if (row) song = { id: row.id, title: row.title, artist: row.artist, album: row.album, year: row.year, genre: row.genre, duration: row.durationSec };
+    }
+    if (!song) return res.status(404).json({ error: 'track not found' });
+
+    let targets: any[] = [song];
+    if (applyToAlbum) {
+      if (!song.albumId) return res.status(404).json({ error: 'album not resolvable for this track' });
+      targets = await subsonic.getAlbum(song.albumId);
+      if (!targets.length) return res.status(404).json({ error: 'album has no tracks' });
+    }
+
+    for (const t of targets) {
+      // Album siblings may be brand-new to library-db — make sure a row exists
+      // before tagging it.
+      db.upsertTrackMeta(t.id, {
+        title: t.title,
+        artist: t.artist,
+        album: t.album,
+        year: t.year ?? null,
+        genre: t.genre ?? null,
+        duration: t.duration ?? null,
+      });
+      if (clearing) {
+        db.clearTrackTags(t.id);
+      } else {
+        db.upsertTrackTags(t.id, {
+          moods,
+          energy,
+          source: 'manual',
+          confidence: 1,
+        });
+      }
+    }
+    await library.save();
+
+    const scope = applyToAlbum ? `album "${song.album}" (${targets.length} tracks)` : `"${song.title}"`;
+    queue.log('info', clearing
+      ? `manual-tag: cleared tags on ${scope}`
+      : `manual-tag: ${scope} → [${moods.join(', ')}] energy=${energy ?? '—'}`);
+
+    res.json({
+      ok: true,
+      updated: targets.length,
+      cleared: clearing,
+      album: applyToAlbum ? (song.album ?? null) : null,
+      tracks: targets.map(t => ({
+        id: t.id,
+        title: t.title,
+        artist: t.artist,
+        moods: clearing ? [] : moods,
+        energy: clearing ? null : energy,
+      })),
+    });
+  } catch (err: any) {
+    queue.log('error', `/library/manual-tag failed: ${err.message}`);
     res.status(500).json({ error: err.message });
   }
 });
