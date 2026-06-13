@@ -38,7 +38,7 @@ const VIBE_SLICE_SIZE = 10;
 const VIBE_K = 60;
 const ECLECTIC_SLICE_SIZE = 10;
 const POPULARITY_SLICE_SIZE = 12;
-const POPULARITY_FLOOR_PERCENTILE = 30;
+const POPULARITY_FLOOR_PERCENTILE = 45;
 
 function shuffle<T>(arr: T[]): T[] {
   return [...arr].sort(() => Math.random() - 0.5);
@@ -105,9 +105,9 @@ export async function buildBriefPool({
   await library.load();
   const universe = library.songsByMoods(moods).filter((t: any) => !recentTrackIds.has(t.id));
 
-  // Popularity floor — drop bottom N% of tracks by trackPopularity.
-  // Tracks with null popularity are neutral (not excluded). Thresholds are
-  // rough: ~10-15% floor means keeping 85-90% of the library.
+  // Popularity floor — drop bottom N% of tracks by trackPopularity, so the
+  // brief pool only draws from the top (100-N)% by popularity.
+  // Tracks with null popularity are neutral (not excluded).
   const withPopularity = universe.filter((t: any) => t.popularitySong != null);
   let floorThreshold = 0;
   if (withPopularity.length > 0) {
