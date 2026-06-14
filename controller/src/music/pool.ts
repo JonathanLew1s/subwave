@@ -146,14 +146,20 @@ export async function buildBriefPool({
 
   add(shuffle([...universeFiltered]).slice(0, ECLECTIC_SLICE_SIZE), 'eclectic');
 
-  // Popularity-weighted slice — within universe, prefer higher-popularity tracks.
-  // Weight by both trackPopularity and albumPopularity (album as secondary).
+  // Popularity-weighted slice — a weighted random draw over the whole
+  // universe, biased toward higher-popularity tracks (both trackPopularity
+  // and albumPopularity, album as secondary) but never a fixed leaderboard.
+  // Uses the standard A-Res weighted-sampling-without-replacement trick:
+  // each track gets a random key raised to 1/weight, and the highest keys
+  // win. Every track gets a non-zero floor weight so even unscored tracks
+  // have a (small) chance.
   const popularityWeighted = universeFiltered
-    .map((t: any) => ({
-      ...t,
-      _popularityScore: ((t.popularitySong || 0) * 0.8 + (t.popularityAlbum || 0) * 0.2),
-    }))
-    .sort((a: any, b: any) => (b._popularityScore || 0) - (a._popularityScore || 0))
+    .map((t: any) => {
+      const score = (t.popularitySong || 0) * 0.8 + (t.popularityAlbum || 0) * 0.2;
+      const weight = Math.max(score, 1);
+      return { ...t, _popularityScore: score, _key: Math.random() ** (1 / weight) };
+    })
+    .sort((a: any, b: any) => b._key - a._key)
     .slice(0, POPULARITY_SLICE_SIZE)
     .map((t: any) => ({ ...t, _source: 'popularity' }));
   add(popularityWeighted, 'popularity');
