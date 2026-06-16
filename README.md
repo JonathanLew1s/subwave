@@ -64,6 +64,55 @@ It's *radio*, not a playlist. No per-listener shuffle, no skip button, no
 - **MCP server.** External agents (Claude Desktop, Cursor, etc.) can request songs and drive the DJ.
 - **Self-hosted.** One `docker compose up -d` on a single Linux host. Optional Cloudflare in front for TLS.
 
+## Fork divergence from upstream
+
+This is a personal fork of [perminder-klair/subwave](https://github.com/perminder-klair/subwave). It tracks upstream closely and merges each release, but carries a set of enhancements that haven't been submitted upstream. Here's what differs:
+
+### Brief-pool and show-focused picking
+
+When a scheduled show is active, the picker builds a **brief-pool**: a stratified basket of tracks pre-filtered to the show's genre, mood, and energy, drawn in popularity-weighted slices. Every LLM tool call — in both the agent and the pool picker — receives this basket as a hard constraint, so the DJ can't wander outside the show's genre even on a creative pick.
+
+The show brief is **PICKER_CRITERIA #1** (a hard constraint), not a system-prompt hint. The agent's first discovery call is also restricted to mood/energy/similarity tools when a show brief is active (`MOOD_AWARE_TOOLS` filter in `dj-agent.ts`).
+
+Upstream moved the show brief to a softer system-prompt position in v0.16; this fork keeps it as a hard rule because we run long-format genre shows where drifting genre is a user-visible regression.
+
+### Popularity scoring
+
+Two extra DB columns — `popularity_song` and `popularity_album` — are backfilled from Navidrome custom tags by a weekly scheduler job (`music/navidrome-api.ts`). Popularity is used to:
+
+- **Floor** the brief-pool (tracks below the 45th popularity percentile aren't eligible for the popularity-weighted slice).
+- **Bias** the pool picker's candidate ranking (`softRankByCompat` in `picker.ts`) so well-known tracks edge out obscure ones when all other signals are equal.
+- **Weight** the auto-playlist fallback (`buildCandidates` in `picker.ts` called from `scheduler.ts` with `preferPopularity=true`).
+
+The migration chain accounts for this: fork adds popularity as DB user_version 3 (upstream's v3 is audio_embedding_meta, which becomes fork's v4; upstream's v4–v9 are renumbered to fork's v5–v10).
+
+### Track filters
+
+Two operator-controlled filters are applied before any track enters the pick pool:
+
+- `maxDurationSec` — drops tracks longer than N seconds (useful for excluding DJ mixes and long-form albums).
+- `excludePatterns` — a list of glob-style patterns matched against the track path; matching tracks are never picked.
+
+Both are surfaced in the admin Settings panel and applied in `picker.ts` (`isRadioPickable`) and in the auto-playlist scheduler.
+
+### Artist-aware LLM-failure fallback
+
+When the LLM picker fails (timeout, bad JSON, etc.), the fallback path (`pickFallback` in `picker.ts`) checks `justPlayedArtists` (a Set of artist keys for the current and previous track) before random-sampling from the candidate pool, so a network hiccup doesn't cause a back-to-back repeat of the same artist.
+
+### Recent-similarity hint
+
+`recentPicksSimilarity` in `music/library.ts` computes pairwise text-embedding cosine similarity for the last N picks. When picks have been clustering (high similarity), the value is surfaced as a `recentSimilarity` flag in `PICKER_CRITERIA` VARIETY (#4), nudging the LLM to prefer a different genre or energy stratum over a tight similarity match.
+
+### linux/arm64 tts-heavy image
+
+The published `subwave-tts-heavy` image is built for both `linux/amd64` and `linux/arm64`. Upstream keeps it amd64-only (citing PyTorch cross-build cost for an opt-in image). This fork runs the sidecar persistently on an Apple Silicon Mac mini and needs native performance — no QEMU tax — for acoustic analysis over a large library plus Chatterbox/PocketTTS voice synthesis.
+
+All wheels used (torch, torchaudio, onnxruntime, chatterbox-tts, pocket-tts, librosa) publish aarch64 variants on PyPI and download.pytorch.org.
+
+### Sidecar prefetch exception in acoustic analysis
+
+`analyze.ts` skips the one-ahead audio prefetch when the backend is the `tts-heavy` sidecar (`usePrefetch = backend !== 'sidecar'`). The Mac mini running tts-heavy has no access to the controller's Longhorn state volume where prefetched files land. The sidecar fetches audio from Navidrome itself when given a URL, so network cost is equivalent and the prefetch step is a no-op that would always 500.
+
 ## Why it's built this way
 
 A playlist is a list you control. Radio is a broadcast you join. SUB/WAVE
