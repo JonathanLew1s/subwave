@@ -179,11 +179,17 @@ services:
         # build time. Usually unnecessary: setting HF_TOKEN in \`environment\`
         # below enables cloning at runtime (lazy download) without it.
         HF_TOKEN: \${HF_TOKEN:-}
-        # Optional — install the CLAP audio-embedding stack (torch +
-        # transformers + onnxruntime, ~1.5GB) into the analyzer venv. Needed
-        # for the "sounds-like" audio similarity + sonic journeys; pair with
-        # ANALYZE_AUDIO_EMBEDDING=1 below. Default off keeps the image lean.
-        WITH_CLAP: \${WITH_CLAP:-0}
+        # Install the CLAP audio-embedding stack (torch + transformers +
+        # onnxruntime, ~1.5GB) into the analyzer venv — powers "sounds-like"
+        # audio similarity + sonic journeys. Only consulted on a source build
+        # (\`docker compose build\`); the published image already bakes CLAP in,
+        # so a plain pull gets it for free. Lazy-loaded at runtime, so it costs
+        # disk only until the analyze pass actually runs.
+        WITH_CLAP: \${WITH_CLAP:-1}
+        # Demucs vocal-activity ranges — same story as WITH_CLAP: baked into the
+        # published image, defaulted on for source builds so they match. Source
+        # build only; lazy-loaded at runtime.
+        WITH_DEMUCS: \${WITH_DEMUCS:-1}
     # amd64-only image (heavy PyTorch stack); pinned so it runs under emulation
     # on arm64 hosts. The other services are multi-arch and auto-select.
     platform: linux/amd64
@@ -203,11 +209,12 @@ services:
       # a built-in. Accept the model terms on huggingface.co/kyutai/pocket-tts,
       # then put HF_TOKEN=hf_... in your root .env. Built-in voices need no token.
       - HF_TOKEN=\${HF_TOKEN:-}
-      # Optional — compute CLAP audio embeddings in the analyze pass (needs an
-      # image built with WITH_CLAP=1 above; without it this is a clean no-op
-      # and the worker emits bpm/key only). Set ANALYZE_AUDIO_EMBEDDING=1 in
-      # your root .env to enable. CLAP_MODEL picks the transformers checkpoint;
-      # CLAP_MODEL_PATH points at a pre-exported ONNX audio encoder instead.
+      # Optional — force CLAP audio embeddings on for the whole analyze pass.
+      # Usually unnecessary: the admin "sounds-like" toggle drives this per
+      # request, and the published image already carries CLAP. Set
+      # ANALYZE_AUDIO_EMBEDDING=1 in your root .env only to always-on it.
+      # CLAP_MODEL picks the transformers checkpoint; CLAP_MODEL_PATH points at
+      # a pre-exported ONNX audio encoder instead.
       - ANALYZE_AUDIO_EMBEDDING=\${ANALYZE_AUDIO_EMBEDDING:-}
       - CLAP_MODEL=\${CLAP_MODEL:-}
       - CLAP_MODEL_PATH=\${CLAP_MODEL_PATH:-}
@@ -370,9 +377,12 @@ services:
         # Optional — bake the gated PocketTTS cloning weights in at build time.
         # Runtime HF_TOKEN (below) enables cloning without it.
         HF_TOKEN: \${HF_TOKEN:-}
-        # Optional — CLAP audio-embedding stack for the analyzer (~1.5GB);
-        # pair with ANALYZE_AUDIO_EMBEDDING=1 below.
-        WITH_CLAP: \${WITH_CLAP:-0}
+        # CLAP audio-embedding stack for the analyzer ("sounds-like", ~1.5GB)
+        # and Demucs vocal-activity ranges. Baked into the published image, so a
+        # plain pull gets them; these only apply to a source build, defaulted on
+        # so it matches. Both lazy-load at runtime (disk cost only).
+        WITH_CLAP: \${WITH_CLAP:-1}
+        WITH_DEMUCS: \${WITH_DEMUCS:-1}
     # amd64-only image (heavy PyTorch stack); pinned so it runs under emulation
     # on arm64 hosts. The other services are multi-arch and auto-select.
     platform: linux/amd64
@@ -387,9 +397,10 @@ services:
       # huggingface.co/kyutai/pocket-tts and set HF_TOKEN in your root .env.
       # Built-in voices need no token.
       - HF_TOKEN=\${HF_TOKEN:-}
-      # Optional — CLAP audio embeddings in the analyze pass (needs an image
-      # built with WITH_CLAP=1 above; clean no-op otherwise). Set
-      # ANALYZE_AUDIO_EMBEDDING=1 in your root .env to enable.
+      # Optional — force CLAP audio embeddings on for the whole analyze pass.
+      # Usually unnecessary: the admin "sounds-like" toggle drives this per
+      # request, and the published image already carries CLAP. Set
+      # ANALYZE_AUDIO_EMBEDDING=1 in your root .env only to always-on it.
       - ANALYZE_AUDIO_EMBEDDING=\${ANALYZE_AUDIO_EMBEDDING:-}
       - CLAP_MODEL=\${CLAP_MODEL:-}
       - CLAP_MODEL_PATH=\${CLAP_MODEL_PATH:-}
@@ -532,9 +543,11 @@ services:
       args:
         # Optional — bake the gated PocketTTS cloning weights in at build time.
         HF_TOKEN: \${HF_TOKEN:-}
-        # Optional — CLAP audio-embedding stack for the analyzer (~1.5GB);
-        # pair with ANALYZE_AUDIO_EMBEDDING=1 below.
-        WITH_CLAP: \${WITH_CLAP:-0}
+        # CLAP audio-embedding stack ("sounds-like", ~1.5GB) + Demucs vocal
+        # ranges. Baked into the published image; these apply to a source build
+        # only, defaulted on to match. Both lazy-load at runtime (disk cost only).
+        WITH_CLAP: \${WITH_CLAP:-1}
+        WITH_DEMUCS: \${WITH_DEMUCS:-1}
     platform: linux/amd64
     container_name: sub-wave-tts-heavy
     restart: unless-stopped
@@ -546,8 +559,9 @@ services:
       # are gated; accept terms at huggingface.co/kyutai/pocket-tts and set
       # HF_TOKEN in your .env. Built-in voices need no token.
       - HF_TOKEN=\${HF_TOKEN:-}
-      # Optional — CLAP audio embeddings in the analyze pass (needs an image
-      # built with WITH_CLAP=1 above; clean no-op otherwise).
+      # Optional — force CLAP embeddings on for the whole analyze pass. Usually
+      # unnecessary: the admin "sounds-like" toggle drives this per request and
+      # the published image already carries CLAP.
       - ANALYZE_AUDIO_EMBEDDING=\${ANALYZE_AUDIO_EMBEDDING:-}
       - CLAP_MODEL=\${CLAP_MODEL:-}
       - CLAP_MODEL_PATH=\${CLAP_MODEL_PATH:-}
@@ -649,8 +663,32 @@ SITE_URL=
 # AI_GATEWAY_API_KEY=
 # ELEVENLABS_API_KEY=
 # SEARCH_API_KEY=tvly-...
+
+# ───────── Acoustic analysis (CLAP audio-similarity + Demucs vocals) ─────────
+# The analysis pass (npm run analyze / admin "Analyze audio") computes bpm, key,
+# loudness, structure, pace and a beat grid for every track. Two heavier,
+# opt-in dimensions need extra deps baked into the tts-heavy image at BUILD time
+# and switched on at RUN time.
+#
+# Build args — pass to \`docker compose build tts-heavy\` (env or here):
+# WITH_CLAP=0     # 1 = build the CLAP "sounds-like" audio-embedding backend
+# WITH_DEMUCS=0   # 1 = build the Demucs source-separation (vocal-presence) backend
+#
+# Runtime flags — env wins ON over the admin toggles (settings.audio.*), never
+# off. A flag with no matching backend in the image is a clean no-op.
+# ANALYZE_AUDIO_EMBEDDING=   # 1/true = fill CLAP audio vectors (needs WITH_CLAP)
+# ANALYZE_VOCAL_ACTIVITY=    # 1/true = fill Demucs vocal ranges (needs WITH_DEMUCS)
+#
+# Optional model overrides (sensible defaults shown):
+# CLAP_MODEL=laion-clap
+# DEMUCS_MODEL=htdemucs
+#
+# HuggingFace token — only to download gated model weights at build time
+# (PocketTTS cloning weights; some CLAP/Demucs checkpoints). ARG HF_TOKEN in
+# docker/Dockerfile.tts-heavy.
+# HF_TOKEN=
 `;
 
 // cli/package.json#version (embedded so the compiled binary can self-identify
 // — used by `subwave --version` and by the TUI release fetch URL).
-export const CLI_VERSION = `0.13.0`;
+export const CLI_VERSION = `0.17.0`;

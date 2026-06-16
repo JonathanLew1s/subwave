@@ -12,21 +12,143 @@
 // analysis column stays NULL, and consumers behave exactly as today.
 
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { existsSync, mkdirSync, createWriteStream } from 'node:fs';
+import { existsSync, mkdirSync, createWriteStream, readFileSync } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 import { config } from '../config.js';
 import * as subsonic from './subsonic.js';
+
+// A structural span over the track, in milliseconds (span shape). Spans
+// are contiguous and cover the analysed window; the first is the intro/leading
+// section. `kind` is reserved for a future labelled segmenter.
+export interface Section {
+  startMs: number;
+  endMs: number;
+  kind?: string;
+}
+
+// A pace sample: a 0..1 perceptual-energy value over a span.
+export interface PaceSpan {
+  startMs: number;
+  endMs: number;
+  value: number;
+}
+
+// A key over a time range: tonic note (sharps) + mode, as a span value.
+export interface KeyRange {
+  startMs: number;
+  endMs: number;
+  tonic: string;
+  mode: 'major' | 'minor';
+}
 
 export interface AnalysisResult {
   bpm: number | null;
   musicalKey: string | null;
   introMs: number | null;
   confidence: number | null;
+  // Structural sections over the analysed window (intro/leading sections are
+  // the reliable part — the outro is beyond the decode window). null when the
+  // backend computed none; consumers treat null as "no structure".
+  sections: Section[] | null;
+  // Vocal-presence ranges (Demucs) over the analysed window. An empty array is
+  // a meaningful value — "analysed, instrumental"; null means not computed (no
+  // ANALYZE_VOCAL_ACTIVITY / no demucs). Consumers treat null as "no signal".
+  vocalRanges: Section[] | null;
+  // Perceptual energy/momentum curve (decoupled from BPM), 0..1 per span. null
+  // when the backend computed none; consumers treat null as "no signal".
+  paceCurve: PaceSpan[] | null;
+  // Beat and downbeat (bar) timestamps in ms. null when the backend computed
+  // none; consumers treat null as "no grid" (today's blind crossfade).
+  beats: number[] | null;
+  bars: number[] | null;
+  // Per-region key (tonic + mode) over time. null when none computed; the
+  // scalar musicalKey stays the back-compat dominant key.
+  keyRanges: KeyRange[] | null;
+  // Integrated loudness (LUFS, BS.1770) + peak (dBFS) over the analysis window,
+  // when the backend has pyloudnorm. null otherwise — consumers treat null as
+  // "no loudness, play at unity gain", so a backend without pyloudnorm behaves
+  // exactly as today. loudnessLufs feeds per-track gain normalisation.
+  loudnessLufs: number | null;
+  peakDb: number | null;
   // CLAP audio embedding (512 floats) when the backend has the model loaded
   // (ANALYZE_AUDIO_EMBEDDING=1 + CLAP weights). null otherwise — every consumer
   // treats null as "no audio vector this pass", so a backend without CLAP is
   // byte-for-byte today's behaviour.
   audioEmbedding: number[] | null;
+}
+
+// Coerce a worker numeric field to a finite number or null. The worker omits
+// loudness/peak entirely when pyloudnorm is absent or measurement failed.
+function parseFinite(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) ? v : null;
+}
+
+// Coerce a list of spans to clean Section[]. Drops malformed/zero-length spans.
+function coerceSpans(v: unknown): Section[] {
+  if (!Array.isArray(v)) return [];
+  const out: Section[] = [];
+  for (const s of v) {
+    const startMs = parseFinite((s as any)?.startMs);
+    const endMs = parseFinite((s as any)?.endMs);
+    if (startMs == null || endMs == null || endMs <= startMs) continue;
+    const kind = typeof (s as any)?.kind === 'string' ? (s as any).kind : undefined;
+    out.push(kind ? { startMs, endMs, kind } : { startMs, endMs });
+  }
+  return out;
+}
+
+// Sections: the worker omits the field when segmentation produced nothing, so
+// empty collapses to null ("no structure").
+function parseSections(v: unknown): Section[] | null {
+  if (!Array.isArray(v)) return null;
+  const out = coerceSpans(v);
+  return out.length ? out : null;
+}
+
+// Vocal ranges: an empty array is a MEANINGFUL value (analysed instrumental),
+// distinct from null (not computed). Preserve [] when the field is present.
+function parseVocalRanges(v: unknown): Section[] | null {
+  if (!Array.isArray(v)) return null;
+  return coerceSpans(v);
+}
+
+// Key ranges: spans carrying tonic + mode. Drops malformed spans; empty → null.
+function parseKeyRanges(v: unknown): KeyRange[] | null {
+  if (!Array.isArray(v)) return null;
+  const out: KeyRange[] = [];
+  for (const s of v) {
+    const startMs = parseFinite((s as any)?.startMs);
+    const endMs = parseFinite((s as any)?.endMs);
+    const tonic = (s as any)?.tonic;
+    const mode = (s as any)?.mode;
+    if (startMs == null || endMs == null || endMs <= startMs) continue;
+    if (typeof tonic !== 'string' || (mode !== 'major' && mode !== 'minor')) continue;
+    out.push({ startMs, endMs, tonic, mode });
+  }
+  return out.length ? out : null;
+}
+
+// A list of ms timestamps → sorted finite number[] or null (empty → null).
+function parseMsList(v: unknown): number[] | null {
+  if (!Array.isArray(v)) return null;
+  const out: number[] = [];
+  for (const x of v) if (typeof x === 'number' && Number.isFinite(x)) out.push(x);
+  return out.length ? out : null;
+}
+
+// Pace curve: spans carrying a 0..1 value. Drops malformed/zero-length spans;
+// empty collapses to null ("no pace").
+function parsePaceCurve(v: unknown): PaceSpan[] | null {
+  if (!Array.isArray(v)) return null;
+  const out: PaceSpan[] = [];
+  for (const s of v) {
+    const startMs = parseFinite((s as any)?.startMs);
+    const endMs = parseFinite((s as any)?.endMs);
+    const value = parseFinite((s as any)?.value);
+    if (startMs == null || endMs == null || value == null || endMs <= startMs) continue;
+    out.push({ startMs, endMs, value });
+  }
+  return out.length ? out : null;
 }
 
 // Coerce the worker's audio_embedding field to a clean number[] or null. The
@@ -118,6 +240,9 @@ function startWorker(): Promise<void> {
 // it — the admin-toggle path. Omitted → the backend's env-driven default.
 export interface AnalyzeRequestOpts {
   embed?: boolean;
+  // Force a (lazy) Demucs load for vocal-activity ranges even when the backend's
+  // ANALYZE_VOCAL_ACTIVITY env is off — the admin/backfill path, mirroring embed.
+  vocal?: boolean;
 }
 
 // Write a request to the local stdio worker and resolve its response. The
@@ -136,6 +261,14 @@ function localRequest(req: ({ url: string } | { path: string }) & AnalyzeRequest
           musicalKey: msg.key ?? null,
           introMs: msg.intro_ms ?? null,
           confidence: msg.confidence ?? null,
+          loudnessLufs: parseFinite(msg.loudness_lufs),
+          peakDb: parseFinite(msg.peak_db),
+          sections: parseSections(msg.sections),
+          vocalRanges: parseVocalRanges(msg.vocal_ranges),
+          paceCurve: parsePaceCurve(msg.pace_curve),
+          beats: parseMsList(msg.beats),
+          bars: parseMsList(msg.bars),
+          keyRanges: parseKeyRanges(msg.key_ranges),
           audioEmbedding: parseAudioEmbedding(msg.audio_embedding),
         }),
       reject,
@@ -162,6 +295,8 @@ async function analyzeViaLocalPath(path: string, opts: AnalyzeRequestOpts = {}):
 // Last sidecar /health read of the CLAP capability. null = unknown (not yet
 // probed, or the field is absent on an old sidecar); true/false once known.
 let _sidecarAudioCapable: boolean | null = null;
+// Same, for vocal-activity (Demucs) support — null until probed/absent field.
+let _sidecarVocalCapable: boolean | null = null;
 
 async function sidecarReachable(): Promise<boolean> {
   const url = config.ttsHeavy.url;
@@ -172,10 +307,16 @@ async function sidecarReachable(): Promise<boolean> {
     const res = await fetch(`${url}/health`, { signal: ac.signal });
     clearTimeout(t);
     if (!res.ok) return false;
-    const body = (await res.json()) as { ok?: boolean; engines?: string[]; analyze_audio_capable?: boolean | null };
+    const body = (await res.json()) as {
+      ok?: boolean;
+      engines?: string[];
+      analyze_audio_capable?: boolean | null;
+      analyze_vocal_capable?: boolean | null;
+    };
     const reachable = !!body.ok && Array.isArray(body.engines) && body.engines.includes('analyze');
     if (reachable) {
       _sidecarAudioCapable = typeof body.analyze_audio_capable === 'boolean' ? body.analyze_audio_capable : null;
+      _sidecarVocalCapable = typeof body.analyze_vocal_capable === 'boolean' ? body.analyze_vocal_capable : null;
     }
     return reachable;
   } catch {
@@ -204,6 +345,14 @@ async function sidecarRequest(body: ({ url: string } | { path: string }) & Analy
       musicalKey: resBody.key ?? null,
       introMs: resBody.intro_ms ?? null,
       confidence: resBody.confidence ?? null,
+      loudnessLufs: parseFinite(resBody.loudness_lufs),
+      peakDb: parseFinite(resBody.peak_db),
+      sections: parseSections(resBody.sections),
+      vocalRanges: parseVocalRanges(resBody.vocal_ranges),
+      paceCurve: parsePaceCurve(resBody.pace_curve),
+      beats: parseMsList(resBody.beats),
+      bars: parseMsList(resBody.bars),
+      keyRanges: parseKeyRanges(resBody.key_ranges),
       audioEmbedding: parseAudioEmbedding(resBody.audio_embedding),
     };
   } finally {
@@ -251,6 +400,14 @@ export function audioEmbeddingAvailable(): boolean | null {
   return _backend === 'sidecar' ? _sidecarAudioCapable : null;
 }
 
+// Whether the active backend can emit Demucs vocal-activity ranges right now.
+// Same semantics as audioEmbeddingAvailable: null = unknown (local, or sidecar
+// not yet reached / old sidecar without the field); false = sidecar built
+// without the demucs stack (WITH_DEMUCS=0). Only meaningful for the sidecar.
+export function vocalActivityAvailable(): boolean | null {
+  return _backend === 'sidecar' ? _sidecarVocalCapable : null;
+}
+
 // Re-read sidecar /health so capability reflects a sidecar rebuilt under a
 // long-lived controller (resolveBackend caches the backend *choice* forever,
 // but CLAP support flips when the operator rebuilds with WITH_CLAP=1). Cheap;
@@ -268,6 +425,33 @@ export async function analyze(songId: string, opts: AnalyzeRequestOpts = {}): Pr
   if (!backend) throw new Error('no analysis backend available');
   const url = subsonic.getRawStreamUrl(songId);
   return backend === 'sidecar' ? analyzeViaSidecar(url, opts) : analyzeViaLocal(url, opts);
+}
+
+// A stream response that wasn't audio — Navidrome answers a request for a file
+// that's missing on disk (a stale library entry still in its DB) with an HTTP
+// 200 Subsonic error envelope, not audio bytes. Typed so the analysis loop can
+// tell this APART from a transient network failure: there's no point retrying
+// it via the url path (the file is simply gone), so the caller records it as a
+// clean failure instead of masking it behind the url-fallback's decode error.
+export class NonAudioResponseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'NonAudioResponseError';
+  }
+}
+
+// Pull the human-readable message out of a Subsonic error envelope (JSON or the
+// XML attribute form), falling back to a trimmed snippet when it isn't a
+// recognisable envelope.
+function subsonicErrorMessage(body: string): string {
+  if (!body) return 'empty response';
+  try {
+    const j = JSON.parse(body);
+    const msg = j?.['subsonic-response']?.error?.message;
+    if (msg) return String(msg);
+  } catch { /* not JSON — try the XML attribute form below */ }
+  const m = body.match(/message="([^"]+)"/);
+  return m ? m[1] : body.slice(0, 200).replace(/\s+/g, ' ').trim();
 }
 
 // Download a track's audio to a capped temp file on the shared state volume
@@ -293,6 +477,18 @@ export async function downloadCapped(songId: string): Promise<string> {
     if (!res.ok || !res.body) {
       throw new Error(`download ${res.status}: ${await res.text().catch(() => '')}`);
     }
+    // Navidrome returns Subsonic API errors (e.g. a file that's gone from disk
+    // but still indexed — a stale library entry) as HTTP 200 with a JSON/XML
+    // body, NOT audio. Without this guard we'd stream that envelope to disk as
+    // `.audio` and the decoder would fail opaquely ("analyze failed"). Catch it
+    // on the content type and surface the real reason.
+    const contentType = (res.headers.get('content-type') || '').toLowerCase();
+    if (contentType.includes('json') || contentType.includes('xml') || contentType.startsWith('text/')) {
+      const body = await res.text().catch(() => '');
+      throw new NonAudioResponseError(
+        `navidrome returned ${contentType || 'a non-audio response'}, not audio: ${subsonicErrorMessage(body)}`,
+      );
+    }
     // Stream the body to disk, stopping once we've pulled the byte cap — a few
     // MB covers the analysis window for any common codec. A capped async
     // generator feeds pipeline (which handles backpressure and tears the source
@@ -310,6 +506,18 @@ export async function downloadCapped(songId: string): Promise<string> {
     }
     await pipeline(capped(), createWriteStream(dest));
     if (read === 0) throw new Error('downloaded empty audio');
+    // Backstop for the content-type guard: an error envelope that slipped past
+    // the headers is tiny and starts with '{' (JSON) or '<' (XML); real audio
+    // never does (m4a 'ftyp' box, mp3 ID3 / 0xFF frame sync). Only re-read
+    // suspiciously small files so we never touch real audio.
+    if (read < 1024) {
+      const head = readFileSync(dest);
+      if (head[0] === 0x7b /* { */ || head[0] === 0x3c /* < */) {
+        throw new NonAudioResponseError(
+          `navidrome returned a ${read}-byte non-audio response: ${subsonicErrorMessage(head.toString('utf8'))}`,
+        );
+      }
+    }
     return dest;
   } finally {
     clearTimeout(t);

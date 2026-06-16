@@ -409,6 +409,14 @@ export async function pickViaPool(queue, ctx, rankTarget: { bpm: number | null; 
           bpm: a.bpm ?? undefined,
           key: a.key ?? undefined,
           duration: c.duration ? Math.round(c.duration) : undefined,
+          // Perceptual energy 0..1 (mean pace), decoupled from BPM — lets the
+          // pick reason about build/release arcs, not just tempo. Omitted when
+          // un-analysed.
+          pace: c.paceMean ?? undefined,
+          // Structural-part count over the opening (arrangement complexity).
+          // Mirrors the agent picker's `sections` (llm/tools.ts slim) so the
+          // shared PICKER_CRITERIA holds for both pick strategies.
+          sections: Array.isArray(c.structure) && c.structure.length ? c.structure.length : undefined,
           source: c._source || null,
           // Cosine similarity to the current track for the KNN sources
           // (embedding-similar / audio-similar). Omitted for the other sources,

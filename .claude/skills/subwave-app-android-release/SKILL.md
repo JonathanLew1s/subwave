@@ -1,20 +1,27 @@
 ---
 name: subwave-app-android-release
-description: Cut a NEW Android build of the SUB/WAVE app (the Expo project in `app/`) in the cloud with EAS and get it to testers — the remote, no-cable counterpart to the iOS TestFlight skill. Use this skill whenever the user wants to "build android for testing", "release the android app", "send the android build to testers", "get a shareable install link for android", "make an apk for the testers", "submit android for testing", "ship the android app", "build a new android version", "distribute the android app", or "put android on testers' phones" — anything aimed at producing a fresh Android build and handing it out. Trigger it even when the user doesn't say "EAS" by name. The default path needs nothing from the user: EAS builds an APK and returns an install link + QR that testers tap to install directly (no Play Store). Do NOT use this skill for putting the app on a LOCAL phone over USB/adb with hot reload — that's `subwave-app-android`. Do NOT use it for the iOS app — that's `subwave-app-ios-release`. The Google Play Store track is a heavier, optional variant documented below (eas.json submit config is wired; the Play Console account setup is still pending).
+description: Cut a NEW Android build of the SUB/WAVE app (the Expo project in `app/`) in the cloud with EAS and ship it — to the live Google Play Store, or as a direct install link for testers. Use this skill whenever the user wants to "release the android app", "ship the android app", "push a new Play Store build", "build a new android version", "send the android build to testers", "get a shareable install link for android", "make an apk for the testers", "submit android", "distribute the android app", or "put android on testers' phones" — anything aimed at producing a fresh Android build and getting it out. Trigger it even when the user doesn't say "EAS" by name. Two paths: a **Play Store release** (`production` profile builds an `.aab`, which you upload to the Play Console by hand — the app is LIVE in production), and a **quick sideload test** (`preview` profile builds an APK + install link/QR, no Google account needed). Do NOT use this skill for putting the app on a LOCAL phone over USB/adb with hot reload — that's `subwave-app-android`. Do NOT use it for the iOS app — that's `subwave-app-ios-release`.
 
 ---
 
-# SUB/WAVE Android release → testers
+# SUB/WAVE Android release → Play Store / testers
 
-Build a fresh Android binary in the cloud and hand it to testers. The default —
-**EAS internal distribution** — needs no Google account and no cable: EAS builds
-an APK, generates+stores the signing keystore for you, and gives back an install
-link + QR that any Android phone can tap to install. This is the practical
-"Android testing" path and the one you almost always want.
+The app is **live in production on the Google Play Store**. There are two ways to
+ship a fresh Android binary, and which you want depends on the audience:
 
-For testers across the room or across the world, this beats the local
-`subwave-app-android` skill (which is USB/adb to a phone you can physically plug
-in). Reach for that one only when you want live hot-reload on your own device.
+- **Play Store release (`production` profile)** — builds a signed `.aab` App
+  Bundle on EAS. You then **upload it to the Play Console by hand** (submission is
+  manual — see the Play Store section). This is how real users get the update.
+- **Quick sideload test (`preview` profile)** — builds an APK and returns an
+  install link + QR any Android phone can tap, no Google account involved. Good
+  for handing a build to a trusted tester fast, outside the Play Store machinery.
+
+Either way EAS generates+stores the signing keystore for you. **Ask which one the
+user wants if it's ambiguous** — "release"/"ship to the store" → `production`
+`.aab`; "send to a tester"/"install link" → `preview` APK.
+
+For a phone you can physically plug in (USB/adb, live hot-reload), use the local
+`subwave-app-android` skill instead.
 
 ## First: does this even need a new build? (OTA)
 
@@ -71,21 +78,50 @@ eas whoami        # expect: pinku1   (if not: eas login)
 
 If `eas` isn't found: `npm i -g eas-cli`.
 
-## The release — one command
+## Play Store release (the real release) — `production`
+
+```bash
+cd "$APP"
+eas build --platform android --profile production --non-interactive   # builds the .aab
+```
+
+It:
+1. Reuses the EAS-stored keystore (generated once, self-signed — no TTY needed).
+2. Auto-increments `versionCode` (`autoIncrement` on the `production` profile).
+3. Builds a signed **`.aab` App Bundle** on EAS (~10–15 min) and links it on the
+   build page as the **Application Archive**.
+
+**Submission is manual.** This project uploads the `.aab` to the Play Console by
+hand — there's no `play-service-account.json` on this machine, so `eas submit`
+won't run headlessly here, and the operator's flow is a manual Console upload.
+When the build finishes:
+
+1. Open the build page (`eas build:view <id>` → Application Archive URL) and
+   download the `.aab`.
+2. Play Console → SUB/WAVE (`com.getsubwave.app`) → **Production** (or a testing
+   track) → **Create new release** → upload the `.aab` → review → roll out.
+
+Data-safety form answers are pre-drafted in `app/docs/store/PLAY-DATA-SAFETY.md`.
+A new **marketing version** (what users see) comes from `expo.version` in
+`app/app.json` — bump + commit it before building; `versionCode` auto-increments
+on its own.
+
+> If you ever wire automated submit: drop the Google service-account JSON at
+> `app/secrets/play-service-account.json` (gitignored; the path `eas.json`'s
+> `submit.production.android` already expects) and then
+> `eas submit --platform android --profile production --non-interactive` pushes to
+> the `internal` track as a `draft`. Until that file exists, upload manually.
+
+## Quick sideload test (skip the store) — `preview`
+
+For handing a build straight to a tester without the Play Store:
 
 ```bash
 cd "$APP"
 eas build --platform android --profile preview --non-interactive
 ```
 
-That's it. It:
-1. Generates the Android keystore on EAS the first time (no prompt — Android
-   keystores are self-signed, so unlike iOS certs this needs no TTY), and reuses
-   it every build after.
-2. Builds the APK on EAS servers (~10–15 min).
-3. Prints an **install link + QR** for an internal-distribution APK.
-
-When it finishes it shows something like:
+Builds an **APK** + prints an **install link + QR**:
 
 ```
 🤖 Open this link on your Android devices (or scan the QR code) to install:
@@ -99,11 +135,13 @@ also linked from the build page if someone wants to download it directly.
 
 ### Detached variant (don't block the session on a 15-min build)
 
+Works for either profile — swap `preview`/`production`:
+
 ```bash
 cd "$APP"
-eas build --platform android --profile preview --no-wait --non-interactive
+eas build --platform android --profile production --no-wait --non-interactive
 # grab the BUILD_ID from the output, then:
-eas build:view <BUILD_ID>          # Status + the Application Archive (.apk) URL
+eas build:view <BUILD_ID>          # Status + the Application Archive (.aab/.apk) URL
 ```
 
 Poll to completion without babysitting:
@@ -126,45 +164,19 @@ on EAS; you don't need to rebuild to re-share.
 
 - **Another test build of the same version** (the common case): change nothing
   and rebuild — internal APKs install over each other regardless of build number.
-- **New marketing version** (e.g. `1.0.0` → `1.0.1`, what testers see): edit
+- **New marketing version** (e.g. `1.0.0` → `1.1.0`, what users see): edit
   `expo.version` in `app/app.json` first, commit, then rebuild.
+
+Unlike Apple, **Play won't reject a same-`versionName` upload** — it keys
+releases on `versionCode` (which `autoIncrement` always bumps), so you *can*
+upload a new build under an unchanged marketing version. But when you're cutting a
+real public release alongside iOS (which *does* force a bump — see the iOS skill),
+bump `expo.version` here too so both stores show the same version. Don't pin the
+current version/`versionCode` in this doc — read `expo.version` from
+`app/app.json` and `eas build:list` for the live `versionCode`.
 
 You don't hand-edit `versionCode` — the `production` profile's `autoIncrement`
 owns it (it only matters for the Play Store path; internal APKs don't care).
-
-## Optional: Google Play Store testing track (config wired; account setup pending)
-
-If you want testers to install through the **Play Store** (the true TestFlight
-parallel) instead of a link, the **`eas.json` side is already done**:
-`submit.production.android` points at `./secrets/play-service-account.json`
-(gitignored) with `track: internal`, `releaseStatus: draft`. The data-safety
-form answers are pre-drafted in `app/docs/store/PLAY-DATA-SAFETY.md`.
-
-What's **still needed** is the operator-only account setup (see
-`app/docs/PRODUCTION-READINESS.md` Phase D for the full ordered checklist):
-
-1. A **Google Play Console** developer account ($25 one-time; identity
-   verification can take days — start it first).
-2. **Manually create the app** `com.getsubwave.app` in Play Console — Google has
-   no API to create the app record (unlike App Store Connect, which EAS can
-   create). Enroll in Play App Signing.
-3. A **Google service-account JSON key** with Play Developer API access, dropped
-   at `app/secrets/play-service-account.json` (the path `eas.json` already
-   expects — kept out of git by the `secrets/` ignore).
-4. The very first `.aab` must be uploaded **manually** through the Console for a
-   brand-new app; the API submit only works afterwards.
-5. Personal developer accounts need a **closed test** (≈12 testers / 14 days)
-   before production access — verify the current policy in the Console.
-
-Once those exist, build the bundle and submit to the internal track:
-
-```bash
-cd "$APP"
-eas build  --platform android --profile production --non-interactive   # builds .aab
-eas submit --platform android --profile production --non-interactive    # uses eas.json
-```
-
-Until the account side is done, stick with the internal-distribution link above.
 
 ## Things that bite
 
@@ -175,10 +187,12 @@ Until the account side is done, stick with the internal-distribution link above.
   APK is what's installable.
 - **Unknown-sources prompt is normal.** Sideloaded (non-Play) installs trigger a
   one-time per-source permission on the device. Approve it.
-- **Guard the EAS keystore if you ever go to Play.** Google permanently binds an
-  app to its upload key. EAS stores the keystore, but back it up
-  (`eas credentials --platform android`) before you commit to a Play release, or
-  you can lock yourself out of updates.
+- **Guard the EAS keystore — the app is already on Play.** Google permanently
+  binds the app to its upload key; lose it and you can't ship updates. EAS stores
+  the keystore, but keep an offline backup (`eas credentials --platform android`).
+- **`eas submit` won't work headlessly here.** No `play-service-account.json` is
+  present, so the Play upload is manual via the Console. Don't tell the user a
+  build "submitted to Play" — it built an `.aab` they still upload by hand.
 - **This is cloud, not adb.** For live hot-reload on a tethered phone, use
   `subwave-app-android` instead.
 
@@ -186,11 +200,11 @@ Until the account side is done, stick with the internal-distribution link above.
 
 | Want | Do |
 |---|---|
-| Ship a **JS-only** change (no new build) | `cd "$APP" && eas update --channel preview --message "…"` (or `production`) |
-| Build + shareable install link for testers | `cd "$APP" && eas build -p android --profile preview --non-interactive` |
+| Ship a **JS-only** change (no new build) | `cd "$APP" && eas update --channel production --message "…"` (testers: `--channel preview`) |
+| **Play Store release** (.aab → manual upload) | `cd "$APP" && eas build -p android --profile production --non-interactive`, then upload the `.aab` in Play Console |
+| Build + shareable install link for a tester | `cd "$APP" && eas build -p android --profile preview --non-interactive` |
 | New app version first | edit `expo.version` in `app/app.json`, commit, then build |
 | Queue without waiting | add `--no-wait`, then `eas build:view <id>` |
-| Get the .apk / install link of a build | `eas build:view <id>` (Application Archive URL) |
+| Get the .aab / .apk of a build | `eas build:view <id>` (Application Archive URL) |
 | List recent builds | `eas build:list --platform android` |
-| Play Store track (after setup) | `eas build -p android --profile production` then `eas submit -p android --profile production` |
 | Confirm login | `eas whoami` (expect `pinku1`) |

@@ -20,7 +20,8 @@ import type {
 import { V3AlertDialog } from '../ui/alert-dialog';
 import { V3Alert } from '../ui/alert';
 import { Textarea } from '../ui/textarea';
-import { Card, Btn, Pill, Eyebrow, Seg, Toggle } from './ui';
+import { Card, Btn, Pill, Seg, Toggle } from './ui';
+import StationHeader, { type HealthMetrics } from './StationHeader';
 import { cn } from '../../lib/cn';
 
 const SAY_KINDS = [
@@ -51,9 +52,19 @@ interface DashStatus {
   context?: StationContext | null;
   dj?: DjState | null;
   listeners?: ListenerCount | number | null;
+  streamOnline?: boolean;
+  streamBitrate?: number | null;
   activeShow?: ActiveShow | null;
   queue?: QueueState;
   sessionMessages?: SessionTurn[];
+}
+
+// Subset of /stats (admin) the health strip reads: DJ p95 latency + the TTS
+// fallback rate, both since-boot rollups. Polled slower than live status since
+// they move slowly and the endpoint is heavier.
+interface HealthStats {
+  llm?: { count?: number; latency?: { p95?: number }; agentTimeoutMs?: number };
+  tts?: { count?: number; fallbackRate?: number | null };
 }
 
 interface ActResponse {
@@ -72,6 +83,30 @@ interface ListenerConnection {
 interface ConnectionsState {
   count: number;
   connections: ListenerConnection[];
+}
+
+// One resolved/failed listener request, as returned by GET /requests. Mirrors
+// the durable record written by the controller's request-log.
+interface RequestEntry {
+  t?: string;
+  requester?: string;
+  text?: string;
+  status?: string;
+  ms?: number | null;
+  path?: string | null;
+  pickSource?: string | null;
+  intent?: string | null;
+  mood?: string | null;
+  scope?: string | null;
+  sort?: string | null;
+  artist?: string | null;
+  genre?: string | null;
+  language?: string | null;
+  searchTerms?: string[] | null;
+  track?: { title?: string; artist?: string; id?: string } | null;
+  ack?: string | null;
+  introScript?: string | null;
+  message?: string | null;
 }
 
 // connectedSeconds → short human string. Listeners rarely sit for days, so
@@ -175,6 +210,9 @@ export default function DashPanel() {
 
   const [conns, setConns] = useState<ConnectionsState | null>(null);
   const [connErr, setConnErr] = useState<string | null>(null);
+  const [stats, setStats] = useState<HealthStats | null>(null);
+  const [requests, setRequests] = useState<RequestEntry[] | null>(null);
+  const [reqErr, setReqErr] = useState<string | null>(null);
   // Longest-connected first by default — the most stable listeners on top.
   const [sort, setSort] = useState<SortState>({ key: 'connectedSeconds', dir: 'desc' });
   const [revealIps, setRevealIps] = useState(false);
@@ -241,6 +279,58 @@ export default function DashPanel() {
     };
   }, [hydrated, needsAuth, adminFetch]);
 
+  // Usage rollups for the health strip (DJ latency + TTS fallback) — polled
+  // every 15s. /stats is heavier than live status and both figures move slowly,
+  // so it gets its own slower cadence. Soft-fails: a miss just freezes the two
+  // meters at their last reading rather than erroring the dash.
+  useEffect(() => {
+    if (!hydrated || needsAuth) return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const r = await adminFetch('/stats');
+        const j = (await r.json().catch(() => null)) as HealthStats | null;
+        if (!cancelled && r.ok && j) setStats(j);
+      } catch {
+        /* leave last reading in place */
+      }
+    };
+    tick();
+    const id = setInterval(tick, 15000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [hydrated, needsAuth, adminFetch]);
+
+  // Recent listener requests + how the DJ resolved each — admin-gated, durable
+  // across restarts. Polled at the slower 10s cadence; this is a review surface,
+  // not a live ticker.
+  useEffect(() => {
+    if (!hydrated || needsAuth) return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const r = await adminFetch('/requests');
+        const j = (await r.json().catch(() => null)) as
+          | { requests?: RequestEntry[]; error?: string }
+          | null;
+        if (cancelled) return;
+        if (!r.ok) throw new Error(j?.error || `failed (${r.status})`);
+        setRequests(j?.requests ?? []);
+        setReqErr(null);
+      } catch (e) {
+        if (!cancelled) setReqErr(e instanceof Error ? e.message : String(e));
+      }
+    };
+    tick();
+    const id = setInterval(tick, 10000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [hydrated, needsAuth, adminFetch]);
+
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = 0;
   }, [status?.sessionMessages?.length]);
@@ -297,50 +387,50 @@ export default function DashPanel() {
     ? `${ctx.weather.condition}${ctx.weather.temp != null ? ` ${Math.round(ctx.weather.temp)}°` : ''}`
     : '—';
 
-  // 6-cell status strip — real data.
-  interface StripCell {
-    l: string;
-    v: ReactNode;
-    sub?: ReactNode;
-    accent?: boolean;
-  }
+  // Inputs for the top-of-dash health strip. Listeners/queue/online come from
+  // the 3s live poll; latency + TTS-fallback from the 15s /stats poll. A meter
+  // with no data yet (stats not loaded, or zero calls since boot) is passed
+  // null so the strip shows "—" rather than a misleading zero.
+  const lCurrent =
+    listenersObj?.current ?? (typeof listenersValue === 'number' ? listenersValue : 0);
+  const lPeak = listenersObj?.peak ?? lCurrent;
+  const healthMetrics: HealthMetrics = {
+    listeners: lCurrent,
+    listenersPeak: lPeak,
+    latencyMs: stats?.llm?.count ? (stats.llm.latency?.p95 ?? null) : null,
+    // Redline at the DJ-agent deadline (the fallback threshold), so the gauge
+    // tracks the model in use instead of a fixed ceiling. Null until /stats
+    // loads → StationHeader falls back to its built-in default scale.
+    latencyDeadlineMs: stats?.llm?.agentTimeoutMs ?? null,
+    ttsFallbackPct: stats?.tts?.count ? Math.round((stats.tts.fallbackRate ?? 0) * 1000) / 10 : null,
+    online: status?.streamOnline ?? null,
+    bitrateKbps: status?.streamBitrate ?? null,
+  };
+
   const djName =
     status?.dj && typeof status.dj === 'object' && 'name' in status.dj
       ? String((status.dj as { name?: unknown }).name ?? '—')
       : '—';
-  const strip: StripCell[] = [
-    { l: 'dj on air', v: djName, accent: true },
-    { l: 'show', v: showName },
-    {
-      l: 'listeners',
-      v: listenersObj?.current != null ? String(listenersObj.current) : '—',
-      sub: listenersObj?.peak != null ? `peak ${listenersObj.peak}` : null,
-    },
-    { l: 'weather', v: weatherText },
-    {
-      l: 'picker',
-      v: q.pickerBusy ? 'thinking' : 'idle',
-      accent: !!q.pickerBusy,
-    },
-  ];
 
   return (
     <div className="grid gap-4">
+      {/* ── STATION HEADER: now-playing + unified health/status strip ───── */}
+      <StationHeader
+        metrics={healthMetrics}
+        np={np}
+        djName={djName}
+        showName={showName}
+        weatherText={weatherText}
+        pickerBusy={!!q.pickerBusy}
+        busy={busy}
+        onSkip={() => setConfirmSkip(true)}
+      />
+
       {err && (
         <V3Alert tone="error" title="controller error">
           {err}
         </V3Alert>
       )}
-
-      {/* ── ON AIR HERO ────────────────────────────────────────────────── */}
-      <HeroSection
-        err={err}
-        np={np}
-        q={q}
-        busy={busy}
-        onSkip={() => setConfirmSkip(true)}
-        strip={strip}
-      />
 
       {/* ── 2-COL OPS ──────────────────────────────────────────────────── */}
       <div className="stack-mobile grid grid-cols-[1.4fr_1fr] gap-4">
@@ -553,6 +643,9 @@ export default function DashPanel() {
         )}
       </Card>
 
+      {/* ── REQUESTS ───────────────────────────────────────────────────── */}
+      <RequestsCard requests={requests} err={reqErr} />
+
       {!status && !err && <div className="text-muted italic">connecting…</div>}
 
       <V3AlertDialog
@@ -606,83 +699,7 @@ function SortableTh({
   );
 }
 
-interface HeroSectionProps {
-  err: string | null;
-  np: NowPlayingTrack | null | undefined;
-  q: QueueState;
-  busy: string | null;
-  onSkip: () => void;
-  strip: { l: string; v: ReactNode; sub?: ReactNode; accent?: boolean }[];
-}
-
-function HeroSection({ err, np, q, busy, onSkip, strip }: HeroSectionProps) {
-  // live-dot is admin-scoped CSS with `background: var(--accent)` already; we
-  // only need to override when there's a controller error, so route through
-  // the dynamic-style hook (via the DotWithBg helper below).
-  return (
-    <section className="card border-ink">
-      <div className="stack-mobile grid grid-cols-[1fr_auto] items-center gap-6 border-b border-ink p-[18px]">
-        <div>
-          <div className="mb-2.5 flex items-center gap-2.5">
-            <DotWithBg background={err ? 'var(--danger)' : 'var(--accent)'} />
-            <Eyebrow className="text-vermilion">on air</Eyebrow>
-            <span className="caption">
-              auto-pick {q.autoPick ? 'on' : 'off'} · auto-link {q.autoLink ? 'on' : 'off'}
-            </span>
-          </div>
-          {np?.title ? (
-            <>
-              <div className="text-[18px] leading-[1.2] font-bold tracking-[-0.01em]">
-                {np.title} <span className="font-semibold text-muted">— {np.artist}</span>
-              </div>
-              {np.album && <div className="caption mt-1.5">album · {np.album}</div>}
-            </>
-          ) : (
-            <div className="text-[22px] font-bold text-muted">nothing reported playing</div>
-          )}
-        </div>
-        <div className="flex gap-2">
-          <Btn lg tone="danger" disabled={!!busy || !np?.title} onClick={onSkip}>
-            {busy === 'skip' ? 'skipping…' : 'Skip track'}
-          </Btn>
-        </div>
-      </div>
-
-      {/* status strip */}
-      <div className="strip-mobile grid grid-cols-5">
-        {strip.map((c, i) => (
-          <div
-            key={i}
-            className={cn(
-              'flex flex-col gap-0.5 px-3.5 py-3',
-              i > 0 && 'border-l border-separator-strong',
-            )}
-          >
-            <span className="caption">{c.l}</span>
-            <span
-              className={cn('text-[14px] font-semibold', c.accent ? 'text-vermilion' : 'text-ink')}
-            >
-              {c.v}
-            </span>
-            {c.sub && <span className="caption text-[9px]">{c.sub}</span>}
-          </div>
-        ))}
-      </div>
-    </section>
-  );
-}
-
 import { useDynamicStyle } from '../../hooks/useDynamicStyle';
-
-interface DotWithBgProps {
-  background: string;
-}
-
-function DotWithBg({ background }: DotWithBgProps) {
-  const ref = useRef<HTMLSpanElement>(null);
-  useDynamicStyle(ref, { background });
-  return <span ref={ref} className="live-dot" />;
-}
 
 interface SegmentButtonProps {
   label: string;
@@ -750,4 +767,116 @@ function classTone(cls: string): string {
     default:
       return 'muted';
   }
+}
+
+// Collapse whitespace + truncate, for the one-line request preview in a summary.
+function oneLine(s: unknown, n = 80): string {
+  const t = String(s ?? '').replace(/\s+/g, ' ').trim();
+  return t.length > n ? `${t.slice(0, n)}…` : t;
+}
+
+// The Requests card — every listener request and exactly how the AI DJ
+// resolved it. Newest first; each row expands to the full debug trace.
+function RequestsCard({ requests, err }: { requests: RequestEntry[] | null; err: string | null }) {
+  return (
+    <Card
+      title="Requests"
+      sub={
+        err
+          ? 'unavailable'
+          : requests
+            ? `${requests.length} recent · what listeners asked + how the DJ answered`
+            : 'loading…'
+      }
+    >
+      {err ? (
+        <div className="text-muted italic">can’t load requests — {err}</div>
+      ) : !requests ? (
+        <div className="text-muted italic">loading…</div>
+      ) : requests.length === 0 ? (
+        <div className="text-muted italic">no requests yet</div>
+      ) : (
+        <div className="grid max-h-[520px] gap-1.5 overflow-y-auto">
+          {requests.map((r, i) => (
+            <RequestRow key={`${r.t ?? ''}:${i}`} r={r} />
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function RequestRow({ r }: { r: RequestEntry }) {
+  const ok = r.status === 'resolved';
+  // Matcher breakdown — only the fields that carry a value, joined compactly.
+  const trace = [
+    r.intent && `intent ${r.intent}`,
+    r.mood && `mood ${r.mood}`,
+    r.scope && `scope ${r.scope}`,
+    r.sort && `sort ${r.sort}`,
+    r.artist && `artist ${r.artist}`,
+    r.genre && `genre ${r.genre}`,
+    r.language && `lang ${r.language}`,
+  ].filter(Boolean) as string[];
+
+  return (
+    <details className="border border-separator-strong">
+      <summary className="grid cursor-pointer grid-cols-[auto_1fr_auto_auto] items-center gap-2.5 px-2.5 py-2">
+        <span className={cn('font-bold', ok ? 'text-vermilion' : 'text-[var(--danger)]')}>
+          {ok ? '✓' : '✗'}
+        </span>
+        <span className="min-w-0 truncate text-[12px]">
+          <span className="font-bold">{r.requester || 'anon'}</span>
+          <span className="text-muted"> · {oneLine(r.text)}</span>
+        </span>
+        <span className="caption text-[10px]">{r.ms != null ? `${r.ms}ms` : ''}</span>
+        <span className="mono-num text-[10px] text-muted">
+          {r.t ? new Date(r.t).toLocaleTimeString('en-GB', { hour12: false }) : '—'}
+        </span>
+      </summary>
+      <div className="grid gap-2 px-2.5 pt-1 pb-2.5 text-[12px]">
+        <div className="flex flex-wrap items-center gap-1.5">
+          {r.path && <Pill tone="accent">{r.path}</Pill>}
+          {r.pickSource && <Pill>{r.pickSource}</Pill>}
+        </div>
+
+        {trace.length > 0 && (
+          <div className="caption text-[10px]">{trace.join(' · ')}</div>
+        )}
+
+        {ok ? (
+          <RequestField label="track">
+            {r.track?.title ? (
+              <span>
+                {r.track.title}{' '}
+                <span className="text-muted">— {r.track.artist}</span>
+              </span>
+            ) : (
+              <span className="text-muted italic">—</span>
+            )}
+          </RequestField>
+        ) : (
+          <RequestField label="failed">
+            <span className="text-[var(--danger)]">{r.message || '—'}</span>
+          </RequestField>
+        )}
+
+        {r.ack && <RequestField label="ack">{r.ack}</RequestField>}
+        {r.introScript && (
+          <RequestField label="intro">
+            <span className="break-words whitespace-pre-wrap">{r.introScript}</span>
+          </RequestField>
+        )}
+      </div>
+    </details>
+  );
+}
+
+function RequestField({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="grid grid-cols-[60px_1fr] items-baseline gap-2">
+      <span className="caption text-[9px]">{label}</span>
+      <span className="break-words">{children}</span>
+    </div>
+  );
 }

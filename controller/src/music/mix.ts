@@ -14,12 +14,36 @@ export interface Analysis {
   key: string | null;
 }
 
+// --- Loudness normalisation ------------------------------------------------
+// Target integrated loudness; streaming-standard −14 LUFS (Spotify, YouTube).
+// Gain is clamped to ±LOUDNESS_GAIN_CLAMP_DB so a mis-measured
+// outlier can't blow up the mix — Liquidsoap's brick-wall limiter still backs
+// us up, but the clamp keeps us well clear of it on normal catalogue audio.
+export const LOUDNESS_TARGET_LUFS = -14;
+export const LOUDNESS_GAIN_CLAMP_DB = 6;
+
+// dB gain to bring a track measured at `lufs` toward the target, clamped.
+// Returns null when the track has no loudness measurement (→ unity gain on the
+// playback side, i.e. today's behaviour). Result is rounded to 0.1 dB — finer
+// is inaudible and just bloats the annotate string.
+export function gainForLoudness(lufs: number | null | undefined): number | null {
+  if (typeof lufs !== 'number' || !Number.isFinite(lufs)) return null;
+  const raw = LOUDNESS_TARGET_LUFS - lufs;
+  const clamped = Math.max(-LOUDNESS_GAIN_CLAMP_DB, Math.min(LOUDNESS_GAIN_CLAMP_DB, raw));
+  return Math.round(clamped * 10) / 10;
+}
+
 // True when a track carries at least one measured value. An un-analysed track
 // (both null) makes every consumer below a no-op, so an un-analysed library
 // behaves exactly as before.
 function analysed(a: Analysis): boolean {
   return a.bpm != null || a.key != null;
 }
+
+// Broadcast crossfade bounds (seconds). The floor keeps every blend audible —
+// shorter than this and a transition reads as a hard cut / "no crossfade".
+export const CROSS_MIN_SECONDS = 6;
+export const CROSS_MAX_SECONDS = 14;
 
 // 0..1 — how close two tempos are, folding half/double time (70 ≈ 140).
 export function bpmCompat(a: number | null, b: number | null): number {
@@ -79,7 +103,7 @@ export function mixCompat(cur: Analysis, next: Analysis): number {
 export function crossSecondsFor(
   cur: Analysis,
   next: Analysis,
-  opts: { energyDelta?: number } = {},
+  opts: { energyDelta?: number; nextIntroMs?: number | null; maxSec?: number | null } = {},
 ): number | null {
   if (!analysed(cur) || !analysed(next)) return null;
 
@@ -100,8 +124,41 @@ export function crossSecondsFor(
   const energyDelta = opts.energyDelta ?? 0;
   secs += -energyDelta * 4;
 
-  // Clamp to a sane broadcast range and quantise to 0.1s.
-  secs = Math.max(3, Math.min(14, secs));
+  // Beat-grid snap (feature: beat/bar grid): round the blend to a whole number
+  // of the OUTGOING track's bars (4 beats, 4/4) so the fade.out spans a musical
+  // unit instead of an arbitrary count. Only when the outgoing tempo is known
+  // and the snap stays in range; the intro cap below still wins over it.
+  if (cur.bpm && cur.bpm > 0) {
+    const barSec = (4 * 60) / cur.bpm;
+    if (barSec > 0) {
+      const bars = Math.max(1, Math.round(secs / barSec));
+      const snapped = bars * barSec;
+      if (snapped >= 3 && snapped <= 14) secs = snapped;
+    }
+  }
+
+  // Structure-aware cap (feature: song structure): the incoming track plays
+  // from t=0 at the start of the cross buffer and its fade.in spans the whole
+  // buffer, so a buffer longer than the incoming track's instrumental intro
+  // would fade up over the first vocals. Cap the blend to the intro length so
+  // the fade-in completes before the song proper. Absent intro → no cap, i.e.
+  // today's behaviour. Floor at CROSS_MIN_SECONDS so a short intro still leaves
+  // an audible blend — a tighter cap collapsed most transitions to ~3s and read
+  // as "no crossfade".
+  const introSec = typeof opts.nextIntroMs === 'number' && opts.nextIntroMs > 0
+    ? opts.nextIntroMs / 1000
+    : null;
+  if (introSec != null) secs = Math.min(secs, Math.max(CROSS_MIN_SECONDS, introSec));
+
+  // Clamp to the broadcast range and quantise to 0.1s. The upper bound is the
+  // operator's admin crossfade length (settings.crossfadeDuration, passed as
+  // opts.maxSec) so the adaptive blend never exceeds what they configured;
+  // falls back to CROSS_MAX_SECONDS when unset. An admin value below the audible
+  // floor wins as the ceiling — an explicit short crossfade is the operator's
+  // call — so the floor yields to it.
+  const maxSec = typeof opts.maxSec === 'number' && opts.maxSec > 0 ? opts.maxSec : CROSS_MAX_SECONDS;
+  const minSec = Math.min(CROSS_MIN_SECONDS, maxSec);
+  secs = Math.max(minSec, Math.min(maxSec, secs));
   return Math.round(secs * 10) / 10;
 }
 

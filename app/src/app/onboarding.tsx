@@ -5,8 +5,8 @@
 // stepper is cosmetic scaffolding around the real probe — api.health() is the
 // gate; api.dj() best-effort fills the station name.
 
-import { router } from 'expo-router';
-import { useRef, useState } from 'react';
+import { router, useLocalSearchParams } from 'expo-router';
+import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -21,8 +21,10 @@ import { ChevronRight } from 'lucide-react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import DiscMark from '@/components/DiscMark';
 import LiveDot from '@/components/LiveDot';
+import StationLiveStatus from '@/components/StationLiveStatus';
 import { createApi, normalizeBase } from '@/lib/api';
 import { useStation } from '@/config/StationContext';
+import { fetchDirectory, type DirectoryStation } from '@/lib/directory';
 import type { StationRef } from '@/lib/station';
 import { useTheme } from '@/theme/ThemeContext';
 
@@ -42,6 +44,10 @@ export default function Onboarding() {
   const { featured, recents, selectStation, base } = useStation();
   const { colors } = useTheme();
   const addMode = !!base;
+  // Deep-link from the Stations "Discover" list: prefill + jump straight to the
+  // health-check instead of the entry form.
+  const params = useLocalSearchParams<{ url?: string; name?: string }>();
+  const autoRan = useRef(false);
 
   const [host, setHost] = useState(stripProto(featured.url));
   const [phase, setPhase] = useState<'entry' | 'check'>('entry');
@@ -49,9 +55,27 @@ export default function Onboarding() {
   const [target, setTarget] = useState<Target | null>(null);
   const [done, setDone] = useState(false);
   const [failed, setFailed] = useState(false);
+  const [directory, setDirectory] = useState<DirectoryStation[]>([]);
   const runId = useRef(0);
 
+  // Pull the community directory so a fresh installer can browse beyond the
+  // bundled featured station — same source the Stations switcher discovers from.
+  useEffect(() => {
+    const ctrl = new AbortController();
+    fetchDirectory(ctrl.signal).then((list) => setDirectory(list));
+    return () => ctrl.abort();
+  }, []);
+
   const known: StationRef[] = [featured, ...recents.filter((r) => r.url !== featured.url)];
+
+  // Discover = directory minus anything already in the known list, minus dupes.
+  const knownKeys = new Set(known.map((r) => normalizeBase(r.url)));
+  const discoverRows = directory.filter((st) => {
+    const k = normalizeBase(st.url);
+    if (knownKeys.has(k)) return false;
+    knownKeys.add(k);
+    return true;
+  });
 
   const runCheck = async (rawUrl: string, presetName?: string) => {
     const withProto = /:\/\//.test(rawUrl) ? rawUrl : `https://${rawUrl.trim()}`;
@@ -139,6 +163,14 @@ export default function Onboarding() {
     runId.current++;
     setPhase('entry');
   };
+
+  // Auto-run the probe once when arriving with a prefilled station (Discover).
+  useEffect(() => {
+    if (autoRan.current || !params.url) return;
+    autoRan.current = true;
+    runCheck(params.url, params.name);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params.url, params.name]);
 
   return (
     <SafeAreaView className="flex-1 bg-bg">
@@ -239,6 +271,46 @@ export default function Onboarding() {
                   </Pressable>
                 ))}
               </View>
+
+              {/* Discover — community directory stations not already listed above */}
+              {discoverRows.length ? (
+                <>
+                  <View className="flex-row items-center" style={{ gap: 10, paddingTop: 18, paddingBottom: 4 }}>
+                    <Text className="font-mono text-muted" style={{ fontSize: 10, letterSpacing: 2.2, textTransform: 'uppercase', fontWeight: '700' }}>
+                      Discover
+                    </Text>
+                    <View style={{ flex: 1, height: 1, backgroundColor: colors.softBorder }} />
+                  </View>
+                  <View>
+                    {discoverRows.map((st) => {
+                      const sub = [st.location, st.genre].filter(Boolean).join(' · ');
+                      return (
+                        <Pressable
+                          key={st.slug || st.url}
+                          onPress={() => runCheck(st.url, st.name)}
+                          accessibilityRole="button"
+                          accessibilityLabel={`Connect to ${st.name}`}
+                          className="flex-row items-center"
+                          style={{ gap: 12, paddingVertical: 12 }}
+                        >
+                          <View className="flex-1">
+                            <Text className="font-body-semibold text-ink" style={{ fontSize: 14 }} numberOfLines={1}>
+                              {st.name}
+                            </Text>
+                            <Text className="font-mono text-muted" style={{ fontSize: 11 }} numberOfLines={1}>
+                              {sub || stripProto(st.url)}
+                            </Text>
+                            <View style={{ marginTop: 4 }}>
+                              <StationLiveStatus url={st.url} />
+                            </View>
+                          </View>
+                          <ChevronRight size={15} color={colors.muted} />
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                </>
+              ) : null}
 
               {addMode ? (
                 <Pressable onPress={() => router.back()} accessibilityRole="button" accessibilityLabel="Back to player" className="items-start" style={{ marginTop: 8, paddingVertical: 8 }}>

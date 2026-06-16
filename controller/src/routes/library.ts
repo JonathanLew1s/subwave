@@ -29,7 +29,8 @@ router.get('/library/browse', requireAdmin, async (req, res) => {
     const q = req.query || {};
     const moods = parseList(q.moods);
     const sort = (typeof q.sort === 'string' ? q.sort : 'artist') as
-      | 'artist' | 'title' | 'year' | 'taggedAt';
+      | 'artist' | 'title' | 'year' | 'taggedAt' | 'bpm' | 'loudness' | 'pace';
+    const vocal = q.vocal === 'instrumental' || q.vocal === 'vocal' ? q.vocal : null;
     const limit = parseIntSafe(q.limit, 50);
     const offset = parseIntSafe(q.offset, 0);
     const yearFrom = parseIntSafe(q.yearFrom, null);
@@ -39,6 +40,7 @@ router.get('/library/browse', requireAdmin, async (req, res) => {
       moods,
       energy: typeof q.energy === 'string' && q.energy ? q.energy : null,
       genre: typeof q.genre === 'string' && q.genre ? q.genre : null,
+      vocal,
       yearFrom,
       yearTo,
       q: typeof q.q === 'string' ? q.q : null,
@@ -90,6 +92,161 @@ router.get('/library/genres', requireAdmin, async (req, res) => {
       .map(([value, songCount]) => ({ value, songCount }))
       .sort((a, b) => b.songCount - a.songCount);
     res.json({ genres: list });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /library/observatory — the bulk dataset behind the Library Observatory
+// (web/app/observatory). Returns every *tagged* track in one shot so the
+// constellation can place all nodes at once. Projected to just what the map /
+// tooltip / filters / stat panels need — lastfm tags, lyric excerpts and
+// embeddings are deliberately omitted here (they'd bloat a multi-thousand-row
+// payload) and loaded lazily per selected track by the /track/:id endpoint.
+// Capped at `max` (default OBSERVATORY_DEFAULT_MAX, raisable per-request via
+// ?max= up to OBSERVATORY_HARD_MAX); above the cap a stratified per-genre sample
+// is returned with `sampled`/`truncated` flags. Station-archive rows are dropped
+// (issue #273).
+// ---------------------------------------------------------------------------
+// Default node cap (env-overridable) and the hard ceiling the client may raise
+// it to from the UI (?max=). 10000 covers most personal libraries in full while
+// keeping the payload sane; above it the observatory's MAP SIZE control dials up
+// to OBSERVATORY_HARD_MAX. Above the cap we return a stratified sample. The web
+// client mirrors this default (ObservatoryApp DEFAULT_MAX) so a fresh browser
+// and a direct API caller agree. (Libraries above ~3k render on the canvas
+// renderer; only small ones keep the animated SVG path.)
+const OBSERVATORY_DEFAULT_MAX = Math.max(500, Number(process.env.OBSERVATORY_MAX) || 10000);
+const OBSERVATORY_HARD_MAX = Math.max(OBSERVATORY_DEFAULT_MAX, Number(process.env.OBSERVATORY_HARD_MAX) || 50000);
+router.get('/library/observatory', requireAdmin, async (req, res) => {
+  try {
+    await library.load();
+    const stats = library.stats();
+    const total = stats.total;
+    const requested = Number(req.query.max);
+    const max = Math.min(
+      OBSERVATORY_HARD_MAX,
+      Math.max(500, Number.isFinite(requested) && requested > 0 ? Math.floor(requested) : OBSERVATORY_DEFAULT_MAX),
+    );
+    const sampled = total > max;
+    const all = sampled ? db.allTaggedSampled(max, total) : db.allTagged();
+    const truncated = sampled;
+    const tracks = all
+      .filter((t) => !subsonic.isStationArchive(t))
+      .slice(0, max)
+      .map((t) => ({
+        id: t.id,
+        title: t.title,
+        artist: t.artist,
+        album: t.album,
+        year: t.year,
+        genre: t.genre,
+        durationSec: t.durationSec,
+        moods: t.moods,
+        energy: t.energy,
+        source: t.source,
+        confidence: t.confidence,
+        bpm: t.bpm,
+        musicalKey: t.musicalKey,
+        analysisConfidence: t.analysisConfidence,
+        // Cheap acoustic scalars for the Observatory's colour-by + aggregate
+        // panels. The full curves/ranges stay on the per-track dossier endpoint.
+        loudnessLufs: t.loudnessLufs,
+        paceMean: library.paceMeanOf(t.pace),
+        // Tri-state: 'vocal' | 'instrumental' | null (not analysed for vocals).
+        vocal: t.vocalRanges == null ? null : t.vocalRanges.length ? 'vocal' : 'instrumental',
+      }));
+    res.json({
+      tracks,
+      truncated,
+      sampled,
+      max,
+      hardMax: OBSERVATORY_HARD_MAX,
+      moodVocab: settings.SHOW_MOODS,
+      stats: {
+        total: stats.total,
+        distinctArtists: stats.distinctArtists,
+        byMood: stats.byMood,
+        byEnergy: stats.byEnergy,
+        byGenre: stats.byGenre,
+        bySource: stats.bySource,
+        withEmbedding: stats.withEmbedding,
+        withAudioEmbedding: stats.withAudioEmbedding,
+        updatedAt: stats.updatedAt,
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /library/observatory/track/:id — the dossier detail for one node. The
+// full record plus the lazily-loaded heavy bits the bulk endpoint skips:
+// last.fm tags, lyric excerpt, the real text + audio embedding vectors (for
+// the heatmap fingerprints), and `mixNext` — the nearest neighbours in text
+// embedding space (real KNN, what the DJ would actually mix toward). All
+// null-safe: missing analysis/embeddings/enrichment simply return null and the
+// UI hides those sections.
+// ---------------------------------------------------------------------------
+router.get('/library/observatory/track/:id', requireAdmin, async (req, res) => {
+  try {
+    await library.load();
+    const id = req.params.id;
+    const t = db.getTrack(id);
+    if (!t) return res.status(404).json({ error: 'track not found' });
+
+    const textVec = db.getVector(id);
+    const audioVec = db.getAudioVector(id);
+    const mixNext = library
+      .tracksLikeThis(id, 8)
+      .map((n: any) => ({
+        id: n.id,
+        title: n.title,
+        artist: n.artist,
+        bpm: n.bpm ?? null,
+        musicalKey: n.musicalKey ?? null,
+        energy: n.energy ?? null,
+        similarity: n._similarity ?? null,
+      }));
+
+    res.json({
+      track: {
+        id: t.id,
+        title: t.title,
+        artist: t.artist,
+        album: t.album,
+        year: t.year,
+        genre: t.genre,
+        durationSec: t.durationSec,
+        moods: t.moods,
+        energy: t.energy,
+        source: t.source,
+        confidence: t.confidence,
+        taggerVersion: t.taggerVersion,
+        model: t.model,
+        taggedAt: t.taggedAt,
+        lastfmTags: t.lastfmTags,
+        lyricExcerpt: t.lyricExcerpt,
+        bpm: t.bpm,
+        musicalKey: t.musicalKey,
+        introMs: t.introMs,
+        analysisConfidence: t.analysisConfidence,
+        analysisVersion: t.analysisVersion,
+        // Acoustic detail — the curves/ranges the dossier's SONG SHAPE timeline
+        // draws. All null-safe; the UI hides what isn't computed. (beats/bars
+        // are deliberately omitted — too granular/heavy for the payload.)
+        loudnessLufs: t.loudnessLufs,
+        peakDb: t.peakDb,
+        structure: t.structure,
+        vocalRanges: t.vocalRanges,
+        pace: t.pace,
+        keyRanges: t.keyRanges,
+      },
+      textEmbedding: textVec ? Array.from(textVec) : null,
+      audioEmbedding: audioVec ? Array.from(audioVec) : null,
+      mixNext,
+    });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

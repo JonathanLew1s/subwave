@@ -75,6 +75,10 @@ export default defineConfig([
             // .lib-* — redesigned /admin/library component classes in
             // app/globals.css (.admin-root .lib-*). Same legacy-CSS deal.
             '^lib-',
+            // .hs-* — the /admin/dash StationHeader status strip instruments
+            // (.admin-root .hs-*), ported from a Claude Design prototype.
+            // Bespoke gauge/bar/lamp CSS in app/globals.css.
+            '^hs-',
             // admin-scoped descendant classes from globals.css
             '^eyebrow$',
             '^caption$',
@@ -166,6 +170,26 @@ export default defineConfig([
   // and can't resolve Tailwind classes, so disable the relevant rules here.
   {
     files: OG_ROUTE_FILES,
+    rules: {
+      'react/forbid-dom-props': 'off',
+      'better-tailwindcss/no-unknown-classes': 'off',
+      'better-tailwindcss/enforce-consistent-class-order': 'off',
+      'better-tailwindcss/no-duplicate-classes': 'off',
+      'better-tailwindcss/no-conflicting-classes': 'off',
+    },
+  },
+
+  // Exemptions for the Library Observatory — a full-bleed data-art view ported
+  // from a Claude Design prototype (web/app/observatory + components/
+  // observatory). Its styling is intrinsically dynamic: SVG node positions,
+  // data-driven bar widths, the ink→vermilion heat ramp and per-cell embedding
+  // opacities are computed at runtime and can't be expressed as static Tailwind
+  // utilities. Its bespoke component classes (obs-*, cmap-*, dossier-*, …) live
+  // in app/globals.css under `.observatory-root`, same legacy-CSS deal as the
+  // bs-*/admin-*/lib-* surfaces in the allow-list above. Same exemption shape
+  // as the next/og routes.
+  {
+    files: ['app/observatory/**/*.{ts,tsx}', 'components/observatory/**/*.{ts,tsx}'],
     rules: {
       'react/forbid-dom-props': 'off',
       'better-tailwindcss/no-unknown-classes': 'off',
