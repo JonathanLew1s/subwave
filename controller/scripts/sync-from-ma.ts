@@ -23,7 +23,7 @@ import fs from 'node:fs';
 import process from 'node:process';
 
 import { STATE_DIR } from '../src/config.js';
-import { openDb, upsertFromMASync, pruneMissingTracks } from '../src/music/library-db.js';
+import { open as openDb, upsertFromMASync, pruneMissingTracks, AUDIO_EMBEDDING_DIM } from '../src/music/library-db.js';
 
 // ---------------------------------------------------------------------------
 // Args
@@ -54,8 +54,7 @@ const MUSIC_ROOT = process.env.MA_MUSIC_ROOT ?? '';
 // ---------------------------------------------------------------------------
 const maDb = new Database(flags.maDbPath, { readonly: true });
 
-// openDb writes to STATE_DIR/library.db.
-const swDb = openDb({ adoptStoredDim: true, reseed: flags.reseed });
+// open() is called inside main() so it can be awaited.
 
 // ---------------------------------------------------------------------------
 // Schema safety check
@@ -171,14 +170,30 @@ const INCREMENTAL_QUERY = SYNC_QUERY.replace(
 // Main
 // ---------------------------------------------------------------------------
 async function main() {
+  await openDb({ embeddingDim: AUDIO_EMBEDDING_DIM, adoptStoredDim: true, reseed: flags.reseed });
+
   const lastSyncAt: number = flags.full ? 0 : (settings.sync?.maLastSyncAt ?? 0);
   const isIncremental = !flags.full && lastSyncAt > 0;
 
-  const rows = isIncremental
-    ? maDb.prepare(INCREMENTAL_QUERY).all(lastSyncAt)
-    : maDb.prepare(SYNC_QUERY).all();
+  // Use .iterate() not .all() — rows contain large JSON blobs (CLAP 1024-dim,
+  // RMS arrays) that exhaust the heap when loaded all at once for 37k+ tracks.
+  const rowIter: Iterable<any> = isIncremental
+    ? maDb.prepare(INCREMENTAL_QUERY).iterate(lastSyncAt)
+    : maDb.prepare(SYNC_QUERY).iterate();
 
-  console.log(`[sync-ma] ${isIncremental ? 'incremental' : 'full'} sync: ${rows.length} tracks to process`);
+  // Count separately (cheap — no JSON cols) so we can log progress without .all().
+  const totalCount = (maDb.prepare(
+    isIncremental
+      ? `SELECT COUNT(*) AS n FROM tracks t
+         JOIN provider_mappings pm ON pm.item_id = t.item_id
+           AND pm.media_type='track' AND pm.provider_domain='filesystem_local'
+         WHERE t.timestamp_modified > ?`
+      : `SELECT COUNT(*) AS n FROM tracks t
+         JOIN provider_mappings pm ON pm.item_id = t.item_id
+           AND pm.media_type='track' AND pm.provider_domain='filesystem_local'`,
+  ).get(...(isIncremental ? [lastSyncAt] : [])) as any).n as number;
+
+  console.log(`[sync-ma] ${isIncremental ? 'incremental' : 'full'} sync: ${totalCount} tracks to process`);
 
   const nowTs = Math.floor(Date.now() / 1000);
   const liveIds = new Set<string>();
@@ -186,7 +201,7 @@ async function main() {
   let withAnalysis = 0;
   let withPopularity = 0;
 
-  for (const row of rows as any[]) {
+  for (const row of rowIter) {
     const id = `ma-${row.item_id}`;
     liveIds.add(id);
 
@@ -244,7 +259,7 @@ async function main() {
 
     if (loud || fades || sonic) withAnalysis++;
     synced++;
-    if (synced % 500 === 0) console.log(`[sync-ma] synced ${synced}/${rows.length}...`);
+    if (synced % 500 === 0) console.log(`[sync-ma] synced ${synced}/${totalCount}...`);
   }
 
   // Prune orphaned rows (full sync only — incremental doesn't see the full catalogue).

@@ -1,0 +1,110 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: subwave-test
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: subwave-test-env
+  namespace: subwave-test
+type: Opaque
+stringData:
+  ADMIN_USER: admin
+  ADMIN_PASS: testpass
+  SITE_URL: http://localhost:7701
+  LIBRARY_BACKEND: music-assistant
+  MA_URL: http://localhost:8095  # not used for sync, but avoids startup warn
+  MA_MUSIC_ROOT: /music
+  MA_DB_PATH: /ma-data/library.db
+  NODE_ENV: development
+  STATE_DIR: /var/sub-wave
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: subwave-test-state
+  namespace: subwave-test
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ma-db-placeholder
+  namespace: subwave-test
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: controller
+  namespace: subwave-test
+  labels:
+    app: controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: controller
+  template:
+    metadata:
+      labels:
+        app: controller
+    spec:
+      initContainers:
+        - name: wait-for-state
+          image: busybox
+          command: ["sh", "-c", "mkdir -p /var/sub-wave/voice && chmod 777 /var/sub-wave"]
+          volumeMounts:
+            - name: state
+              mountPath: /var/sub-wave
+      containers:
+        - name: controller
+          image: subwave-controller:ma-backend
+          imagePullPolicy: Never
+          ports:
+            - name: http
+              containerPort: 7701
+          envFrom:
+            - secretRef:
+                name: subwave-test-env
+          volumeMounts:
+            - name: state
+              mountPath: /var/sub-wave
+            - name: ma-db
+              mountPath: /ma-data
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+      volumes:
+        - name: state
+          persistentVolumeClaim:
+            claimName: subwave-test-state
+        - name: ma-db
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: controller
+  namespace: subwave-test
+spec:
+  selector:
+    app: controller
+  ports:
+    - port: 7701
+      targetPort: 7701
