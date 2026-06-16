@@ -56,9 +56,15 @@ export const config = {
   // MA_MUSIC_ROOT: absolute path to the music library root, accessible to the
   // controller container (same volume as MA). Used to build file:// URIs for
   // Liquidsoap — no transcoding, no HTTP, direct local file reads.
+  //
+  // Auth (one of):
+  //   MA_API_TOKEN: long-lived JWT from MA UI (Profile → Long-lived tokens)
+  //   MA_USERNAME + MA_PASSWORD: used for auth/login on first connect
   musicAssistant: {
     url: process.env.MA_URL || 'http://music-assistant:8095',
-    apiKey: process.env.MA_API_KEY || '',
+    apiToken: process.env.MA_API_TOKEN || process.env.MA_API_KEY || '',
+    username: process.env.MA_USERNAME || '',
+    password: process.env.MA_PASSWORD || '',
     musicRoot: process.env.MA_MUSIC_ROOT || '',
   },
   ollama: {
