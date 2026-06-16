@@ -29,9 +29,10 @@ tui/dist/
 # Runtime state — file-based IPC, TTS output, archives, logs
 state/
 
-# Claude Code worktrees + local runtime files
+# Claude Code worktrees, local runtime files, and personal operator skills
 .claude/worktrees/
 .claude/scheduled_tasks.lock
+.claude/skills/
 
 # OS / editor
 .DS_Store
