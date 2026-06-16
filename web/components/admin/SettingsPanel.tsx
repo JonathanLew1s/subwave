@@ -2345,8 +2345,8 @@ function LibraryBackendSection({ data, form, setForm, busy, saveSettings, adminF
       } else {
         setSyncLog([`Sync started (${opts.full ? 'full' : 'incremental'}). Watch Library tagger section for progress.`]);
       }
-    } catch (e: any) {
-      setSyncLog([`Error: ${e.message}`]);
+    } catch (e) {
+      setSyncLog([`Error: ${e instanceof Error ? e.message : String(e)}`]);
     } finally {
       setSyncBusy(false);
     }
@@ -2371,7 +2371,7 @@ function LibraryBackendSection({ data, form, setForm, busy, saveSettings, adminF
         <div className="mb-4 flex items-start gap-2.5 border border-[var(--accent)] bg-[var(--ink-softer)] p-3">
           <span className="mt-1 size-1.5 flex-none rounded-full bg-vermilion" />
           <div className="text-[11px] leading-[1.5] text-muted">
-            <span className="font-bold text-[var(--fg)] uppercase tracking-[0.1em]">Env override active</span>{' '}—{' '}
+            <span className="font-bold tracking-[0.1em] text-[var(--fg)] uppercase">Env override active</span>{' '}—{' '}
             <code>LIBRARY_BACKEND={effective}</code> is set in the environment and overrides this setting.
             Unset the env var to let this UI control the backend.
           </div>

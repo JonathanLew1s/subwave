@@ -1,0 +1,38 @@
+# Local dev override for MA backend testing.
+# Usage:
+#   cp .env.local-test .env
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml up -d
+#
+# This override:
+#   - Swaps controller + web to locally-built :ma-backend images
+#   - Removes platform:linux/amd64 (local builds are arm64 on Apple Silicon)
+#   - Mounts the MA library.db snapshot into the controller
+#   - Adds MA env vars
+#   - Bind-mounts controller/src + scripts for hot reload
+
+services:
+  controller:
+    image: subwave-controller:ma-backend
+    platform: linux/arm64
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.controller
+    environment:
+      - LIBRARY_BACKEND=${LIBRARY_BACKEND:-music-assistant}
+      - MA_URL=${MA_URL:-http://host.docker.internal:8095}
+      - MA_MUSIC_ROOT=${MA_MUSIC_ROOT:-/music}
+      - MA_DB_PATH=${MA_DB_PATH:-/var/sub-wave/ma/library.db}
+    volumes:
+      # MA library.db snapshot (copy from k3d or from homelab)
+      - ${MA_DB_SNAPSHOT:-/tmp/ma-sync}:/var/sub-wave/ma:ro
+      # Hot-reload source (optional — remove if you don't need it)
+      - ./controller/src:/app/src
+      - ./controller/scripts:/app/scripts
+    command: ["node_modules/.bin/tsx", "watch", "src/server.ts"]
+
+  web:
+    image: subwave-web:ma-backend
+    platform: linux/arm64
+    build:
+      context: .
+      dockerfile: web/Dockerfile
