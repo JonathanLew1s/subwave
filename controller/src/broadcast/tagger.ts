@@ -11,10 +11,11 @@ type TaggerState = {
   startedAt: string | null;
   pid: number | null;
   lastLog: string[];
-  // Which script the live child is: 'tag' (tag-library) or 'analyze' (the
-  // acoustic/audio-embedding pass via analyze-library). Single-flight across
-  // both — they contend on the same library DB and analysis backend.
-  mode: 'tag' | 'analyze' | null;
+  // Which script the live child is: 'tag' (tag-library), 'analyze' (the
+  // acoustic/audio-embedding pass via analyze-library), or 'sync-ma' (the
+  // Music Assistant DB sync). Single-flight across all — they contend on
+  // the same library DB.
+  mode: 'tag' | 'analyze' | 'sync-ma' | null;
   // Latest structured progress sentinel from the child ([progress] lines on
   // stdout — see music/tagger-progress.ts). Left in place after exit so the
   // last payload doubles as a what-just-finished summary; the UI gates its
@@ -86,7 +87,7 @@ export function startAnalyzer(opts: { limit?: number; audio?: boolean } = {}) {
   spawnChild('analyze', args, detail);
 }
 
-function spawnChild(mode: 'tag' | 'analyze', args: string[], detail: string) {
+function spawnChild(mode: 'tag' | 'analyze' | 'sync-ma', args: string[], detail: string) {
   const label = mode === 'tag' ? 'tagger' : 'analyzer';
   const child = spawn('npx', ['tsx', ...args], { cwd: '/app', detached: false });
   activeChild = child;
@@ -129,6 +130,16 @@ function spawnChild(mode: 'tag' | 'analyze', args: string[], detail: string) {
     queue.log('scheduler', `${label} finished (${signal ? `signal ${signal}` : `exit ${code}`})`);
   });
   queue.log('scheduler', `${label} started${detail ? ` (${detail})` : ''}`);
+}
+
+// Spawn the MA sync script (scripts/sync-from-ma.ts). Uses the same
+// single-flight state as the tagger — sync and tag contend on library DB.
+// MA_DB_PATH must point to the MA library.db (via env or settings).
+export function startMaSync(opts: { full?: boolean; reseed?: boolean } = {}) {
+  const args = ['scripts/sync-from-ma.ts'];
+  if (opts.full || opts.reseed) args.push('--full');
+  if (opts.reseed) args.push('--reseed');
+  spawnChild('sync-ma', args, opts.reseed ? 'reseed' : opts.full ? 'full' : 'incremental');
 }
 
 // Stop the running tagger by signalling its child. The exit handler above

@@ -588,6 +588,21 @@ const DEFAULTS = {
       username: '',
     },
   },
+  // Library backend: which system supplies track discovery + streaming URIs.
+  // 'navidrome' (default): Subsonic/OpenSubsonic API — the upstream-tracked path.
+  // 'music-assistant': MA REST API + local file paths via musicAssistant.musicRoot.
+  // Env vars (LIBRARY_BACKEND / MA_URL / MA_MUSIC_ROOT) override these when set.
+  library: {
+    backend: 'navidrome' as 'navidrome' | 'music-assistant',
+    musicAssistant: {
+      // MA server URL. '' = use MA_URL env var.
+      url: '',
+      // Absolute path to the music library root accessible to the controller.
+      // Must match the volume mount point so file:// URIs reach Liquidsoap.
+      // '' = use MA_MUSIC_ROOT env var.
+      musicRoot: '',
+    },
+  },
 };
 
 const BOUNDS = {
@@ -1079,6 +1094,19 @@ export async function load() {
         : [...DEFAULTS.picker.excludePatterns],
     },
     webhooks: normalizeWebhooks(stored.webhooks),
+    library: {
+      backend: (['navidrome', 'music-assistant'] as const).includes(stored.library?.backend)
+        ? stored.library.backend
+        : DEFAULTS.library.backend,
+      musicAssistant: {
+        url: typeof stored.library?.musicAssistant?.url === 'string'
+          ? stored.library.musicAssistant.url.trim()
+          : DEFAULTS.library.musicAssistant.url,
+        musicRoot: typeof stored.library?.musicAssistant?.musicRoot === 'string'
+          ? stored.library.musicAssistant.musicRoot.trim()
+          : DEFAULTS.library.musicAssistant.musicRoot,
+      },
+    },
     scrobble: {
       lastfm: {
         enabled:
@@ -1918,6 +1946,24 @@ export async function update(patch) {
   }
   if ('webhooks' in patch) {
     next.webhooks = validateWebhooksStrict(patch.webhooks, next.webhooks || []);
+  }
+  if ('library' in patch) {
+    const lib = patch.library || {};
+    if (lib.backend !== undefined) {
+      if (!['navidrome', 'music-assistant'].includes(lib.backend)) {
+        throw new Error('library.backend must be "navidrome" or "music-assistant"');
+      }
+      next.library.backend = lib.backend;
+    }
+    if (lib.musicAssistant !== undefined) {
+      const ma = lib.musicAssistant || {};
+      if (ma.url !== undefined) {
+        next.library.musicAssistant.url = String(ma.url).trim().slice(0, 500);
+      }
+      if (ma.musicRoot !== undefined) {
+        next.library.musicAssistant.musicRoot = String(ma.musicRoot).trim().slice(0, 500);
+      }
+    }
   }
   if ('scrobble' in patch) {
     const sb = patch.scrobble || {};

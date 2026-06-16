@@ -1,45 +1,57 @@
 // Routes library calls to the configured backend.
-// Default: subsonic (Navidrome) — the upstream-tracked path.
-// Set LIBRARY_BACKEND=music-assistant to use Music Assistant instead.
 //
-// All callers import from here; the underlying module is a runtime detail.
-// Upstream changes to subsonic.ts continue to flow into the Navidrome path
-// without touching this file or the MA implementation.
+// Default: subsonic (Navidrome) — the upstream-tracked path.
+// Set LIBRARY_BACKEND=music-assistant (or settings.library.backend) to use MA.
+//
+// Both backend modules are imported eagerly so there is no async barrier at
+// first use. The active backend is selected on first call from config.libraryBackend,
+// which server.ts populates from settings.json after startup (env always wins).
+// Callers never know which backend is active — they import from here and call normally.
 
-type API = typeof import('./subsonic.js');
+import * as _s from './subsonic.js';
+import * as _m from './ma-api.js';
+import { config } from '../config.js';
 
-const api: API =
-  process.env.LIBRARY_BACKEND === 'music-assistant'
-    ? ((await import('./ma-api.js')) as unknown as API)
-    : await import('./subsonic.js');
+type S = typeof _s;
 
-export const search = api.search;
-export const getRandomSongs = api.getRandomSongs;
-export const getSongsByGenre = api.getSongsByGenre;
-export const getGenres = api.getGenres;
-export const resolveGenreName = api.resolveGenreName;
-export const getSimilarSongs = api.getSimilarSongs;
-export const supportsSonicSimilarity = api.supportsSonicSimilarity;
-export const getSonicSimilarTracks = api.getSonicSimilarTracks;
-export const getStarred = api.getStarred;
-export const getAlbumList = api.getAlbumList;
-export const getRecentlyAddedAlbums = api.getRecentlyAddedAlbums;
-export const getFrequentAlbums = api.getFrequentAlbums;
-export const getArtistInfo = api.getArtistInfo;
-export const getTopSongs = api.getTopSongs;
-export const getAlbum = api.getAlbum;
-export const getSong = api.getSong;
-export const getArtist = api.getArtist;
-export const searchArtists = api.searchArtists;
-export const getArtistLastfmTags = api.getArtistLastfmTags;
-export const getLyrics = api.getLyrics;
-export const iterateAllSongs = api.iterateAllSongs;
-export const getPlaylists = api.getPlaylists;
-export const getPlaylist = api.getPlaylist;
-export const getCoverArtUrl = api.getCoverArtUrl;
-export const getStreamUrl = api.getStreamUrl;
-export const getRawStreamUrl = api.getRawStreamUrl;
-export const getLocalPath = api.getLocalPath;
-export const getPlayableUri = api.getPlayableUri;
-export const getAnnotatedUri = api.getAnnotatedUri;
-export const isStationArchive = api.isStationArchive;
+let _b: S | null = null;
+
+// Resolved on first call so server.ts can apply settings.library.backend to
+// config.libraryBackend before any library call happens (first pick fires
+// after the event loop yields, well after startup completes).
+const b = (): S =>
+  (_b ??= config.libraryBackend === 'music-assistant' ? (_m as unknown as S) : _s);
+
+// Reset for tests or hot-reload scenarios (call after changing config.libraryBackend).
+export function resetBackend() { _b = null; }
+
+export const search: S['search'] = (...a) => (b().search as S['search'])(...a);
+export const getRandomSongs: S['getRandomSongs'] = (...a) => (b().getRandomSongs as S['getRandomSongs'])(...a);
+export const getSongsByGenre: S['getSongsByGenre'] = (...a) => (b().getSongsByGenre as S['getSongsByGenre'])(...a);
+export const getGenres: S['getGenres'] = (...a) => (b().getGenres as S['getGenres'])(...a);
+export const resolveGenreName: S['resolveGenreName'] = (...a) => (b().resolveGenreName as S['resolveGenreName'])(...a);
+export const getSimilarSongs: S['getSimilarSongs'] = (...a) => (b().getSimilarSongs as S['getSimilarSongs'])(...a);
+export const supportsSonicSimilarity: S['supportsSonicSimilarity'] = (...a) => (b().supportsSonicSimilarity as S['supportsSonicSimilarity'])(...a);
+export const getSonicSimilarTracks: S['getSonicSimilarTracks'] = (...a) => (b().getSonicSimilarTracks as S['getSonicSimilarTracks'])(...a);
+export const getStarred: S['getStarred'] = (...a) => (b().getStarred as S['getStarred'])(...a);
+export const getAlbumList: S['getAlbumList'] = (...a) => (b().getAlbumList as S['getAlbumList'])(...a);
+export const getRecentlyAddedAlbums: S['getRecentlyAddedAlbums'] = (...a) => (b().getRecentlyAddedAlbums as S['getRecentlyAddedAlbums'])(...a);
+export const getFrequentAlbums: S['getFrequentAlbums'] = (...a) => (b().getFrequentAlbums as S['getFrequentAlbums'])(...a);
+export const getArtistInfo: S['getArtistInfo'] = (...a) => (b().getArtistInfo as S['getArtistInfo'])(...a);
+export const getTopSongs: S['getTopSongs'] = (...a) => (b().getTopSongs as S['getTopSongs'])(...a);
+export const getAlbum: S['getAlbum'] = (...a) => (b().getAlbum as S['getAlbum'])(...a);
+export const getSong: S['getSong'] = (...a) => (b().getSong as S['getSong'])(...a);
+export const getArtist: S['getArtist'] = (...a) => (b().getArtist as S['getArtist'])(...a);
+export const searchArtists: S['searchArtists'] = (...a) => (b().searchArtists as S['searchArtists'])(...a);
+export const getArtistLastfmTags: S['getArtistLastfmTags'] = (...a) => (b().getArtistLastfmTags as S['getArtistLastfmTags'])(...a);
+export const getLyrics: S['getLyrics'] = (...a) => (b().getLyrics as S['getLyrics'])(...a);
+export const iterateAllSongs: S['iterateAllSongs'] = (...a) => (b().iterateAllSongs as S['iterateAllSongs'])(...a);
+export const getPlaylists: S['getPlaylists'] = (...a) => (b().getPlaylists as S['getPlaylists'])(...a);
+export const getPlaylist: S['getPlaylist'] = (...a) => (b().getPlaylist as S['getPlaylist'])(...a);
+export const getCoverArtUrl: S['getCoverArtUrl'] = (...a) => (b().getCoverArtUrl as S['getCoverArtUrl'])(...a);
+export const getStreamUrl: S['getStreamUrl'] = (...a) => (b().getStreamUrl as S['getStreamUrl'])(...a);
+export const getRawStreamUrl: S['getRawStreamUrl'] = (...a) => (b().getRawStreamUrl as S['getRawStreamUrl'])(...a);
+export const getLocalPath: S['getLocalPath'] = (...a) => (b().getLocalPath as S['getLocalPath'])(...a);
+export const getPlayableUri: S['getPlayableUri'] = (...a) => (b().getPlayableUri as S['getPlayableUri'])(...a);
+export const getAnnotatedUri: S['getAnnotatedUri'] = (...a) => (b().getAnnotatedUri as S['getAnnotatedUri'])(...a);
+export const isStationArchive: S['isStationArchive'] = (...a) => (b().isStationArchive as S['isStationArchive'])(...a);

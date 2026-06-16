@@ -105,9 +105,19 @@ app.listen(config.server.port, async () => {
     config.weather.lng = s.weather.lng;
     config.weather.locationName = s.weather.locationName;
     config.weather.units = s.weather.units;
+    // Library backend — env vars override settings, otherwise settings win.
+    if (!process.env.LIBRARY_BACKEND && s.library?.backend) {
+      config.libraryBackend = s.library.backend;
+    }
+    if (!process.env.MA_URL && s.library?.musicAssistant?.url) {
+      config.musicAssistant.url = s.library.musicAssistant.url;
+    }
+    if (!process.env.MA_MUSIC_ROOT && s.library?.musicAssistant?.musicRoot) {
+      config.musicAssistant.musicRoot = s.library.musicAssistant.musicRoot;
+    }
     await settings.ensureLiquidsoapSettingsFile();
     console.log(
-      `[settings] loaded. jingleRatio=${s.jingleRatio} crossfadeDuration=${s.crossfadeDuration} location=${s.weather.locationName}`,
+      `[settings] loaded. jingleRatio=${s.jingleRatio} crossfadeDuration=${s.crossfadeDuration} location=${s.weather.locationName} backend=${config.libraryBackend}`,
     );
   } catch (err) {
     console.error('[settings] load failed:', err.message);
