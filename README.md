@@ -78,11 +78,15 @@ Upstream moved the show brief to a softer system-prompt position in v0.16; this 
 
 ### Popularity scoring
 
-Two extra DB columns — `popularity_song` and `popularity_album` — are backfilled from Navidrome custom tags by a weekly scheduler job (`music/navidrome-api.ts`). Popularity is used to:
+The underlying music library has **ListenBrainz global listen-counts** baked in as custom tags on every file — `popularity_song` (track-level listen-count percentile) and `popularity_album` (album-level). Navidrome surfaces these as custom tag columns via its API.
+
+A weekly scheduler job (`music/navidrome-api.ts`) reads those custom tags and backfills two extra DB columns — `popularity_song` and `popularity_album` — so the picker can use real listen-count signal rather than inferring popularity from moods or metadata alone. Popularity is used to:
 
 - **Floor** the brief-pool (tracks below the 45th popularity percentile aren't eligible for the popularity-weighted slice).
 - **Bias** the pool picker's candidate ranking (`softRankByCompat` in `picker.ts`) so well-known tracks edge out obscure ones when all other signals are equal.
 - **Weight** the auto-playlist fallback (`buildCandidates` in `picker.ts` called from `scheduler.ts` with `preferPopularity=true`).
+
+Without the ListenBrainz tags in the files, these columns stay NULL and the system falls back to upstream's behaviour (no popularity signal). The feature is a no-op on a library that hasn't had the tags applied.
 
 The migration chain accounts for this: fork adds popularity as DB user_version 3 (upstream's v3 is audio_embedding_meta, which becomes fork's v4; upstream's v4–v9 are renumbered to fork's v5–v10).
 
