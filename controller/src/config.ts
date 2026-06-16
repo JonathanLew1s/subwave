@@ -41,12 +41,25 @@ export const config = {
   // paths from this rather than hardcoding /var/sub-wave.
   stateDir: STATE_DIR,
   soundsDir: SOUNDS_DIR,
+  // Which library backend supplies track discovery and streaming URIs.
+  // 'navidrome' (default): Subsonic/OpenSubsonic API — the upstream-tracked path.
+  // 'music-assistant': MA REST + local file paths via MA_MUSIC_ROOT.
+  libraryBackend: (process.env.LIBRARY_BACKEND || 'navidrome') as 'navidrome' | 'music-assistant',
   navidrome: {
     url: process.env.NAVIDROME_URL || 'http://navidrome:4533',
     user: process.env.NAVIDROME_USER || '',
     password: process.env.NAVIDROME_PASS || '',
     apiVersion: '1.16.1',
     clientName: 'sub-wave',
+  },
+  // Music Assistant backend. Only used when LIBRARY_BACKEND=music-assistant.
+  // MA_MUSIC_ROOT: absolute path to the music library root, accessible to the
+  // controller container (same volume as MA). Used to build file:// URIs for
+  // Liquidsoap — no transcoding, no HTTP, direct local file reads.
+  musicAssistant: {
+    url: process.env.MA_URL || 'http://music-assistant:8095',
+    apiKey: process.env.MA_API_KEY || '',
+    musicRoot: process.env.MA_MUSIC_ROOT || '',
   },
   ollama: {
     // Default-when-blank server URL + model. The admin Settings UI

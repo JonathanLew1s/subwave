@@ -22,7 +22,7 @@
 // On boot the library-db auto-migrates any state/moods.json into the SQLite
 // tracks table as legacy v1 entries (see library-db.ts).
 
-import * as subsonic from './subsonic.js';
+import * as subsonic from './library-backend.js';
 import * as db from './library-db.js';
 import * as settings from '../settings.js';
 import * as embeddings from './embeddings.js';

@@ -12,7 +12,7 @@
 // Selection is deterministic given the same library state + random seed,
 // which keeps test assertions clean.
 
-import * as subsonic from './subsonic.js';
+import * as subsonic from './library-backend.js';
 import * as db from './library-db.js';
 import { SHOW_MOODS } from '../settings.js';
 

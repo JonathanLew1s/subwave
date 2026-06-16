@@ -8,7 +8,7 @@
 
 import { tool } from 'ai';
 import { z } from 'zod';
-import * as subsonic from '../music/subsonic.js';
+import * as subsonic from '../music/library-backend.js';
 import * as library from '../music/library.js';
 import * as embeddings from '../music/embeddings.js';
 import { artistKey, coreArtistKey, filterPickerCandidates } from '../music/recency.js';

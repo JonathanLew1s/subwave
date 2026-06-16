@@ -4,7 +4,7 @@
 import express from 'express';
 import { stat, readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import * as subsonic from '../music/subsonic.js';
+import * as subsonic from '../music/library-backend.js';
 import * as settings from '../settings.js';
 import { getFullContext } from '../context.js';
 import { queue } from '../broadcast/queue.js';

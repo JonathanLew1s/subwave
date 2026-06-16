@@ -6,7 +6,7 @@ import { writeFile, readFile } from 'node:fs/promises';
 import { existsSync, readFileSync, openSync, readSync, closeSync, statSync } from 'node:fs';
 import { stat, rename } from 'node:fs/promises';
 import { config } from '../config.js';
-import * as subsonic from '../music/subsonic.js';
+import * as subsonic from '../music/library-backend.js';
 import * as mix from '../music/mix.js';
 import * as library from '../music/library.js';
 import { speak } from '../audio/tts.js';

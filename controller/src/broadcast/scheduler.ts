@@ -7,7 +7,7 @@
 import cron from 'node-cron';
 import { writeFile } from 'node:fs/promises';
 import { config } from '../config.js';
-import * as subsonic from '../music/subsonic.js';
+import * as subsonic from '../music/library-backend.js';
 import * as dj from '../llm/dj.js';
 import * as library from '../music/library.js';
 import { getFullContext } from '../context.js';

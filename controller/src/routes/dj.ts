@@ -7,7 +7,7 @@ import express from 'express';
 import { requireAdmin } from '../middleware/auth.js';
 import { queue } from '../broadcast/queue.js';
 import * as dj from '../llm/dj.js';
-import * as subsonic from '../music/subsonic.js';
+import * as subsonic from '../music/library-backend.js';
 import * as settings from '../settings.js';
 import { runStationId, runHourlyCheck, runLink, refreshAutoPlaylist } from '../broadcast/scheduler.js';
 import { skillCatalog, runCapability } from '../skills/_agent.js';

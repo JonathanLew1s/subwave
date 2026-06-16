@@ -511,8 +511,11 @@ def on_meta(m) =
   album = m["album"]
   filename = m["filename"]
   subsonic_id = m["subsonic_id"]
+  # ma_id is set by the Music Assistant backend (ma-api.ts getAnnotatedUri).
+  # One of subsonic_id / ma_id will be non-empty depending on LIBRARY_BACKEND.
+  ma_id = m["ma_id"]
   if title != "" or artist != "" then
-    log("on_meta: title=#{title} | artist=#{artist} | album=#{album} | id=#{subsonic_id}")
+    log("on_meta: title=#{title} | artist=#{artist} | album=#{album} | id=#{subsonic_id}#{ma_id}")
     ts = int_of_float(time())
     # Build via json.stringify so values with embedded quotes/backslashes
     # (e.g. a title like Fall (From "Rabb Da Radio 3")) are properly escaped —
@@ -522,6 +525,7 @@ def on_meta(m) =
       artist = artist,
       album = album,
       subsonic_id = subsonic_id,
+      ma_id = ma_id,
       filename = filename,
       timestamp = ts
     })

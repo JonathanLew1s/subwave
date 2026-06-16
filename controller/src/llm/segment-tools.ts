@@ -15,7 +15,7 @@ import { queue } from '../broadcast/queue.js';
 import { fetchHeadlines, hashHeadline } from '../skills/news.js';
 import { searchWeb, searchReady } from '../skills/web-search.js';
 import { fetchOnThisDay, hashCuriosity } from '../skills/curiosity.js';
-import { getArtist, searchArtists } from '../music/subsonic.js';
+import { getArtist, searchArtists } from '../music/library-backend.js';
 
 // `caps` is the list of capabilities offered this tick (see skills/_agent.js).
 // Only data-backed kinds get a tool — traffic is pure generation and needs none.

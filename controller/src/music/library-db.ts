@@ -112,6 +112,9 @@ export interface TrackRecord {
   beats: number[] | null;           // per-beat timestamps (ms)
   bars: number[] | null;            // downbeat (bar) timestamps (ms)
   keyRanges: TrackKeyRange[] | null; // per-region key (tonic + mode) over time
+  // Music Assistant item_id — set when the track was synced from MA (sync-from-ma.ts).
+  // NULL for tracks populated via the Navidrome/Subsonic path.
+  maItemId: number | null;
 }
 
 // A key over a time range: tonic note (sharps) + mode.
@@ -395,6 +398,15 @@ async function migrate(embeddingDim: number, reseed = false, adoptStoredDim = fa
     d.pragma('user_version = 10');
   }
 
+  if (userVersion < 11) {
+    // Music Assistant item_id — links a library-db row to the MA track that was
+    // synced into it (via sync-from-ma.ts). NULL for Navidrome-backend installs.
+    // Indexed for fast path lookup during sync reconciliation.
+    runDdl(d, `ALTER TABLE tracks ADD COLUMN ma_item_id INTEGER;`);
+    runDdl(d, `CREATE INDEX IF NOT EXISTS idx_tracks_ma_item_id ON tracks(ma_item_id) WHERE ma_item_id IS NOT NULL;`);
+    d.pragma('user_version = 11');
+  }
+
   // The vec0 virtual table carries the embedding dim in its schema. If the
   // stored dim doesn't match the requested one, the caller asked for a model
   // swap — that's a --reseed operation, not an auto-migration.
@@ -625,6 +637,72 @@ export function upsertTrackMeta(id: string, meta: TrackMeta): void {
       normaliseYear(meta.year),
       meta.genre ?? null,
       Number.isFinite(meta.duration as number) ? (meta.duration as number) : null,
+    );
+}
+
+// Upsert a track row that came from the Music Assistant sync script.
+// The `id` key is "ma-{ma_item_id}" for MA-backend installs so it is stable
+// across MA rescans (MA reuses item_ids for delta sync).
+// Acoustic fields are written on first encounter and updated only when the
+// MA row has newer data (identified by non-null values from the sync query).
+export function upsertFromMASync(id: string, data: {
+  maItemId: number;
+  title?: string | null;
+  artist?: string | null;
+  album?: string | null;
+  year?: number | null;
+  genre?: string | null;
+  duration?: number | null;
+  loudnessLufs?: number | null;
+  bpm?: number | null;
+  musicalKey?: string | null;
+  beatsJson?: string | null;
+  paceJson?: string | null;
+  popularitySong?: number | null;
+  popularityAlbum?: number | null;
+}): void {
+  requireDb()
+    .prepare(
+      `
+      INSERT INTO tracks (
+        id, ma_item_id, title, artist, album, year, genre, duration_sec,
+        loudness_lufs, bpm, musical_key, beats_json, pace_json,
+        popularity_song, popularity_album
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        ma_item_id      = excluded.ma_item_id,
+        title           = COALESCE(excluded.title, tracks.title),
+        artist          = COALESCE(excluded.artist, tracks.artist),
+        album           = COALESCE(excluded.album, tracks.album),
+        year            = COALESCE(excluded.year, tracks.year),
+        genre           = COALESCE(excluded.genre, tracks.genre),
+        duration_sec    = COALESCE(excluded.duration_sec, tracks.duration_sec),
+        loudness_lufs   = COALESCE(excluded.loudness_lufs, tracks.loudness_lufs),
+        bpm             = COALESCE(excluded.bpm, tracks.bpm),
+        musical_key     = COALESCE(excluded.musical_key, tracks.musical_key),
+        beats_json      = COALESCE(excluded.beats_json, tracks.beats_json),
+        pace_json       = COALESCE(excluded.pace_json, tracks.pace_json),
+        popularity_song  = COALESCE(excluded.popularity_song, tracks.popularity_song),
+        popularity_album = COALESCE(excluded.popularity_album, tracks.popularity_album)
+      `,
+    )
+    .run(
+      id,
+      data.maItemId,
+      data.title ?? null,
+      data.artist ?? null,
+      data.album ?? null,
+      normaliseYear(data.year),
+      data.genre ?? null,
+      Number.isFinite(data.duration as number) ? data.duration : null,
+      Number.isFinite(data.loudnessLufs as number) ? data.loudnessLufs : null,
+      Number.isFinite(data.bpm as number) ? data.bpm : null,
+      data.musicalKey ?? null,
+      data.beatsJson ?? null,
+      data.paceJson ?? null,
+      Number.isFinite(data.popularitySong as number) ? data.popularitySong : null,
+      Number.isFinite(data.popularityAlbum as number) ? data.popularityAlbum : null,
     );
 }
 
@@ -1311,6 +1389,7 @@ function rowToTrack(row: any): TrackRecord {
     beats: row.beats_json ? parseMsArray(row.beats_json) : null,
     bars: row.bars_json ? parseMsArray(row.bars_json) : null,
     keyRanges: row.key_ranges_json ? parseKeyRanges(row.key_ranges_json) : null,
+    maItemId: row.ma_item_id ?? null,
   };
 }
 

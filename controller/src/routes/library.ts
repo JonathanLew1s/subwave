@@ -7,7 +7,7 @@ import { requireAdmin } from '../middleware/auth.js';
 import * as library from '../music/library.js';
 import * as db from '../music/library-db.js';
 import * as coverage from '../music/library-coverage.js';
-import * as subsonic from '../music/subsonic.js';
+import * as subsonic from '../music/library-backend.js';
 import * as settings from '../settings.js';
 import * as embeddings from '../music/embeddings.js';
 import { tagBatch, TAGGER_BATCH_SYSTEM } from '../music/tagger-core.js';
