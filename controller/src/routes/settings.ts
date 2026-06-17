@@ -14,7 +14,7 @@ import { queue } from '../broadcast/queue.js';
 import { restartLiquidsoap, startStream, stopStream, streamStatus } from '../broadcast/liquidsoap-control.js';
 import { invalidateWeatherCache } from '../context.js';
 import { requireAdmin } from '../middleware/auth.js';
-import { tagger, startMaSync } from '../broadcast/tagger.js';
+import { tagger } from '../broadcast/tagger.js';
 import { skillCatalog } from '../skills/_agent.js';
 import { clearUserThemeCache, loadUserThemes, listThemes } from '../themes.js';
 
@@ -77,7 +77,6 @@ router.get('/settings', requireAdmin, async (req, res) => {
       },
       // Current effective backend (may differ from settings if env var is set).
       effectiveLibraryBackend: config.libraryBackend,
-      maDbPath: process.env.MA_DB_PATH || '',
       defaults: {
         // The built-in prompt template — the UI shows this when djPrompt is "".
         djPrompt: settings.DEFAULT_DJ_PROMPT_TEMPLATE,
@@ -214,27 +213,6 @@ router.post('/auto-pick', requireAdmin, express.json(), (req, res) => {
   res.json({ autoPick: queue.autoPick });
 });
 
-// ---------------------------------------------------------------------------
-// POST /sync-ma — trigger a Music Assistant DB sync (background, single-flight).
-// Body (optional): { "full": true, "reseed": true }
-// Requires LIBRARY_BACKEND=music-assistant and MA_DB_PATH to be set.
-// ---------------------------------------------------------------------------
-router.post('/sync-ma', requireAdmin, express.json(), (req, res) => {
-  if (config.libraryBackend !== 'music-assistant') {
-    return res.status(400).json({ error: 'Library backend is not set to music-assistant' });
-  }
-  if (tagger.running) {
-    return res.status(409).json({ error: `${tagger.mode} already running`, running: tagger.mode });
-  }
-  const full = !!req.body?.full;
-  const reseed = !!req.body?.reseed;
-  try {
-    startMaSync({ full, reseed });
-    res.json({ ok: true, mode: 'sync-ma', full, reseed });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
 
 // ---------------------------------------------------------------------------
 // POST /themes/refresh — re-scan ${STATE_DIR}/themes/. Use after dropping a

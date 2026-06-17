@@ -590,15 +590,17 @@ const DEFAULTS = {
   },
   // Library backend: which system supplies track discovery + streaming URIs.
   // 'navidrome' (default): Subsonic/OpenSubsonic API — the upstream-tracked path.
-  // 'music-assistant': MA REST API + local file paths via musicAssistant.musicRoot.
-  // Env vars (LIBRARY_BACKEND / MA_URL / MA_MUSIC_ROOT) override these when set.
+  // 'ma-api': music-assistant-db-api REST sidecar (MA_DB_API_URL).
+  // Env vars (LIBRARY_BACKEND / MA_DB_API_URL / MA_DB_API_KEY / MA_MUSIC_ROOT) override these when set.
   library: {
-    backend: 'navidrome' as 'navidrome' | 'music-assistant',
-    musicAssistant: {
-      // MA server URL. '' = use MA_URL env var.
+    backend: 'navidrome' as 'navidrome' | 'ma-api',
+    maDbApi: {
+      // music-assistant-db-api URL. '' = use MA_DB_API_URL env var.
       url: '',
-      // Absolute path to the music library root accessible to the controller.
-      // Must match the volume mount point so file:// URIs reach Liquidsoap.
+      // Optional API key matching the sidecar's MA_API_KEY. '' = no auth.
+      apiKey: '',
+      // Absolute path to the music library root inside the controller container.
+      // Must match the volume mount so file:// URIs reach Liquidsoap.
       // '' = use MA_MUSIC_ROOT env var.
       musicRoot: '',
     },
@@ -1095,16 +1097,19 @@ export async function load() {
     },
     webhooks: normalizeWebhooks(stored.webhooks),
     library: {
-      backend: (['navidrome', 'music-assistant'] as const).includes(stored.library?.backend)
+      backend: (['navidrome', 'ma-api'] as const).includes(stored.library?.backend)
         ? stored.library.backend
         : DEFAULTS.library.backend,
-      musicAssistant: {
-        url: typeof stored.library?.musicAssistant?.url === 'string'
-          ? stored.library.musicAssistant.url.trim()
-          : DEFAULTS.library.musicAssistant.url,
-        musicRoot: typeof stored.library?.musicAssistant?.musicRoot === 'string'
-          ? stored.library.musicAssistant.musicRoot.trim()
-          : DEFAULTS.library.musicAssistant.musicRoot,
+      maDbApi: {
+        url: typeof stored.library?.maDbApi?.url === 'string'
+          ? stored.library.maDbApi.url.trim()
+          : DEFAULTS.library.maDbApi.url,
+        apiKey: typeof stored.library?.maDbApi?.apiKey === 'string'
+          ? stored.library.maDbApi.apiKey.trim()
+          : DEFAULTS.library.maDbApi.apiKey,
+        musicRoot: typeof stored.library?.maDbApi?.musicRoot === 'string'
+          ? stored.library.maDbApi.musicRoot.trim()
+          : DEFAULTS.library.maDbApi.musicRoot,
       },
     },
     scrobble: {
@@ -1950,18 +1955,21 @@ export async function update(patch) {
   if ('library' in patch) {
     const lib = patch.library || {};
     if (lib.backend !== undefined) {
-      if (!['navidrome', 'music-assistant'].includes(lib.backend)) {
-        throw new Error('library.backend must be "navidrome" or "music-assistant"');
+      if (!['navidrome', 'ma-api'].includes(lib.backend)) {
+        throw new Error('library.backend must be "navidrome" or "ma-api"');
       }
       next.library.backend = lib.backend;
     }
-    if (lib.musicAssistant !== undefined) {
-      const ma = lib.musicAssistant || {};
+    if (lib.maDbApi !== undefined) {
+      const ma = lib.maDbApi || {};
       if (ma.url !== undefined) {
-        next.library.musicAssistant.url = String(ma.url).trim().slice(0, 500);
+        next.library.maDbApi.url = String(ma.url).trim().slice(0, 500);
+      }
+      if (ma.apiKey !== undefined) {
+        next.library.maDbApi.apiKey = String(ma.apiKey).trim().slice(0, 500);
       }
       if (ma.musicRoot !== undefined) {
-        next.library.musicAssistant.musicRoot = String(ma.musicRoot).trim().slice(0, 500);
+        next.library.maDbApi.musicRoot = String(ma.musicRoot).trim().slice(0, 500);
       }
     }
   }

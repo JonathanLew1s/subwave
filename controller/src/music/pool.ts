@@ -103,7 +103,7 @@ export async function buildBriefPool({
   recentTrackIds?: Set<string>;
 }): Promise<BriefPoolResult> {
   await library.load();
-  const universe = library.songsByMoods(moods).filter((t: any) => !recentTrackIds.has(t.id));
+  const universe = (await library.songsByMoods(moods)).filter((t: any) => !recentTrackIds.has(t.id));
 
   // Popularity floor — drop bottom N% of tracks by trackPopularity, so the
   // brief pool only draws from the top (100-N)% by popularity.

@@ -109,11 +109,14 @@ app.listen(config.server.port, async () => {
     if (!process.env.LIBRARY_BACKEND && s.library?.backend) {
       config.libraryBackend = s.library.backend;
     }
-    if (!process.env.MA_URL && s.library?.musicAssistant?.url) {
-      config.musicAssistant.url = s.library.musicAssistant.url;
+    if (!process.env.MA_DB_API_URL && s.library?.maDbApi?.url) {
+      config.maDbApi.url = s.library.maDbApi.url;
     }
-    if (!process.env.MA_MUSIC_ROOT && s.library?.musicAssistant?.musicRoot) {
-      config.musicAssistant.musicRoot = s.library.musicAssistant.musicRoot;
+    if (!process.env.MA_DB_API_KEY && s.library?.maDbApi?.apiKey) {
+      config.maDbApi.apiKey = s.library.maDbApi.apiKey;
+    }
+    if (!process.env.MA_MUSIC_ROOT && s.library?.maDbApi?.musicRoot) {
+      config.maDbApi.musicRoot = s.library.maDbApi.musicRoot;
     }
     await settings.ensureLiquidsoapSettingsFile();
     console.log(

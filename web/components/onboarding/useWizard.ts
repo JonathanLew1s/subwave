@@ -1,13 +1,20 @@
 'use client';
 
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useAdminAuth } from '@/lib/adminAuth';
 
 // Shape of every wizard step in one place — easier to pass around than
 // individual setState callbacks. Each step component reads/writes via the
 // `set` updater rather than its own state, so the Review step can show the
 // whole picture without prop-drilling.
+export type LibraryBackend = 'navidrome' | 'ma-api';
+
 export interface WizardData {
+  libraryBackend: LibraryBackend;
+
+  ma: { url: string; apiKey: string };
+  maTest: { ok: boolean | null; msg?: string };
+
   navidrome: { url: string; user: string; pass: string };
   // Connection-test result so the step can show a green check across renders.
   navidromeTest: { ok: boolean | null; msg?: string };
@@ -45,6 +52,9 @@ export interface WizardData {
 }
 
 export const DEFAULT_DATA: WizardData = {
+  libraryBackend: 'navidrome',
+  ma: { url: '', apiKey: '' },
+  maTest: { ok: null },
   navidrome: { url: '', user: '', pass: '' },
   navidromeTest: { ok: null },
   llm: {
@@ -71,11 +81,15 @@ export const DEFAULT_DATA: WizardData = {
   apiKeys: {},
 };
 
-export type StepId = 'navidrome' | 'llm' | 'tts' | 'dj' | 'jingles' | 'review';
+export type StepId = 'ma' | 'navidrome' | 'llm' | 'tts' | 'dj' | 'jingles' | 'review';
 
-export const STEP_ORDER: StepId[] = ['navidrome', 'llm', 'tts', 'dj', 'jingles', 'review'];
+export function getStepOrder(backend: LibraryBackend): StepId[] {
+  const libraryStep: StepId = backend === 'ma-api' ? 'ma' : 'navidrome';
+  return [libraryStep, 'llm', 'tts', 'dj', 'jingles', 'review'];
+}
 
 export const STEP_LABELS: Record<StepId, string> = {
+  ma: 'Music Assistant',
   navidrome: 'Navidrome',
   llm: 'LLM',
   tts: 'TTS',
@@ -89,14 +103,6 @@ export function useWizard() {
   const [data, setData] = useState<WizardData>(DEFAULT_DATA);
   const [stepIdx, setStepIdx] = useState(0);
 
-  const step = STEP_ORDER[stepIdx];
-  const next = useCallback(() => setStepIdx(i => Math.min(i + 1, STEP_ORDER.length - 1)), []);
-  const back = useCallback(() => setStepIdx(i => Math.max(i - 1, 0)), []);
-  const goto = useCallback((id: StepId) => {
-    const i = STEP_ORDER.indexOf(id);
-    if (i >= 0) setStepIdx(i);
-  }, []);
-
   const patch = useCallback((p: Partial<WizardData> | ((d: WizardData) => Partial<WizardData>)) => {
     setData(d => {
       const incoming = typeof p === 'function' ? p(d) : p;
@@ -104,8 +110,43 @@ export function useWizard() {
     });
   }, []);
 
+  // Fetch backend from controller on mount so the wizard renders the right step 1.
+  useEffect(() => {
+    fetch('/api/onboarding/status')
+      .then(r => r.json())
+      .then((s: any) => {
+        if (s.libraryBackend) {
+          patch({ libraryBackend: s.libraryBackend as LibraryBackend });
+        }
+      })
+      .catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const stepOrder = getStepOrder(data.libraryBackend);
+
+  const step = stepOrder[stepIdx];
+  const next = useCallback(() => setStepIdx(i => Math.min(i + 1, stepOrder.length - 1)), [stepOrder.length]);
+  const back = useCallback(() => setStepIdx(i => Math.max(i - 1, 0)), []);
+  const goto = useCallback((id: StepId) => {
+    const i = stepOrder.indexOf(id);
+    if (i >= 0) setStepIdx(i);
+  }, [stepOrder]);
+
   // POST helpers — every wizard write goes through adminFetch so the same
   // 401-handling that the admin shell uses applies here.
+  const testMa = useCallback(async () => {
+    const r = await auth.adminFetch('/onboarding/test-ma', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ url: data.ma.url, apiKey: data.ma.apiKey }),
+    });
+    const j = (await r.json().catch(() => ({}))) as { ok?: boolean; version?: string; error?: string };
+    const result = { ok: !!j.ok, msg: j.ok ? `Music Assistant ${j.version}` : j.error };
+    patch({ maTest: result });
+    return result;
+  }, [auth, data.ma, patch]);
+
   const testNavidrome = useCallback(async () => {
     const r = await auth.adminFetch('/onboarding/test-navidrome', {
       method: 'POST',
@@ -150,8 +191,10 @@ export function useWizard() {
       if (k) apiKeys[k] = data.tts.cloud.apiKey;
     }
 
-    const body = {
-      navidrome: data.navidrome,
+    const body: any = {
+      ...(data.libraryBackend === 'ma-api'
+        ? { maDbApi: { url: data.ma.url, apiKey: data.ma.apiKey }, libraryBackend: 'ma-api' }
+        : { navidrome: data.navidrome }),
       llm: {
         provider: data.llm.provider,
         model: data.llm.model,
@@ -193,9 +236,11 @@ export function useWizard() {
     patch,
     step,
     stepIdx,
+    stepOrder,
     next,
     back,
     goto,
+    testMa,
     testNavidrome,
     testLlm,
     save,

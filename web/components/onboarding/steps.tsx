@@ -72,6 +72,55 @@ function TestPill({ result }: { result: { ok: boolean | null; msg?: string } }) 
   );
 }
 
+// ─── MUSIC ASSISTANT ───────────────────────────────────────────────────────
+export function MaStep({ w }: { w: WizardController }) {
+  const [busy, setBusy] = useState(false);
+  const onTest = async () => {
+    setBusy(true);
+    await w.testMa();
+    setBusy(false);
+  };
+  return (
+    <div>
+      <StepHeader
+        title="Connect MA DB API"
+        blurb="SUB/WAVE will query the music-assistant-db-api sidecar for track discovery, cover art, and similar-song lookups. Tracks stream from the shared music volume."
+      />
+      <div className="grid gap-3">
+        <Field label="MA DB API URL" hint="e.g. http://music-assistant:8096">
+          <TextInput
+            value={w.data.ma.url}
+            placeholder="http://music-assistant:8096"
+            onChange={e =>
+              w.patch(d => ({ ma: { ...d.ma, url: e.target.value }, maTest: { ok: null } }))
+            }
+          />
+        </Field>
+        <Field label="API key" hint="Optional — leave blank if the sidecar has no auth configured">
+          <TextInput
+            type="password"
+            value={w.data.ma.apiKey}
+            onChange={e =>
+              w.patch(d => ({ ma: { ...d.ma, apiKey: e.target.value }, maTest: { ok: null } }))
+            }
+          />
+        </Field>
+        <div>
+          <button
+            type="button"
+            onClick={onTest}
+            disabled={busy || !w.data.ma.url}
+            className="rounded border border-ink bg-ink px-3 py-1.5 text-xs font-medium tracking-wide text-bg uppercase hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {busy ? 'Testing…' : 'Test connection'}
+          </button>
+          <TestPill result={w.data.maTest} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── NAVIDROME ─────────────────────────────────────────────────────────────
 export function NavidromeStep({ w }: { w: WizardController }) {
   const [busy, setBusy] = useState(false);
@@ -425,8 +474,11 @@ export function ReviewStep({
       setBusy(false);
     }
   };
+  const libraryRow: [string, string] = w.data.libraryBackend === 'ma-api'
+    ? ['MA DB API', w.data.ma.url || '— skipped —']
+    : ['Navidrome', w.data.navidrome.url ? `${w.data.navidrome.user} @ ${w.data.navidrome.url}` : '— skipped —'];
   const rows: Array<[string, string]> = [
-    ['Navidrome', w.data.navidrome.url ? `${w.data.navidrome.user} @ ${w.data.navidrome.url}` : '— skipped —'],
+    libraryRow,
     ['LLM', `${w.data.llm.provider} · ${w.data.llm.model}`],
     ['TTS', w.data.tts.defaultEngine + (w.data.tts.cloud.enabled ? ` (+ ${w.data.tts.cloud.provider})` : '')],
     ['Station', `${w.data.dj.stationName} — ${w.data.dj.locationName}`],

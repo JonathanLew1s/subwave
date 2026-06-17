@@ -3,9 +3,10 @@
 // writes — for runtime guarantees, see the Zod schemas in controller/src
 // (when controller TS migration lands per issue #43).
 
-/** A track currently airing. `subsonic_id` is present for library tracks and
- *  drives MediaSession artwork via the `/api/cover/:id` proxy. Jingles +
- *  scanning have no id. */
+/** A track currently airing. One of `ma_id` (Music Assistant backend) or
+ *  `subsonic_id` (Navidrome backend) is present for library tracks and drives
+ *  MediaSession artwork via the `/api/cover/:id` proxy. Jingles + scanning
+ *  have no id. */
 export interface NowPlayingTrack {
   title?: string;
   artist?: string;
@@ -13,6 +14,7 @@ export interface NowPlayingTrack {
   year?: number;
   duration?: number;
   subsonic_id?: string;
+  ma_id?: string;
 }
 
 export interface WeatherContext {

@@ -15,6 +15,8 @@ import { promptVocabHash } from '../music/embeddings.js';
 import { activeModelLabel } from '../llm/provider.js';
 import { queue } from '../broadcast/queue.js';
 import { tagger, startAnalyzer } from '../broadcast/tagger.js';
+import { config } from '../config.js';
+import * as _ma from '../music/library-ma.js';
 
 export const router = express.Router();
 
@@ -36,7 +38,7 @@ router.get('/library/browse', requireAdmin, async (req, res) => {
     const yearFrom = parseIntSafe(q.yearFrom, null);
     const yearTo = parseIntSafe(q.yearTo, null);
 
-    const result = library.filter({
+    const result = await library.filter({
       moods,
       energy: typeof q.energy === 'string' && q.energy ? q.energy : null,
       genre: typeof q.genre === 'string' && q.genre ? q.genre : null,
@@ -198,8 +200,7 @@ router.get('/library/observatory/track/:id', requireAdmin, async (req, res) => {
 
     const textVec = db.getVector(id);
     const audioVec = db.getAudioVector(id);
-    const mixNext = library
-      .tracksLikeThis(id, 8)
+    const mixNext = (await library.tracksLikeThis(id, 8))
       .map((n: any) => ({
         id: n.id,
         title: n.title,
@@ -260,6 +261,17 @@ router.get('/library/observatory/track/:id', requireAdmin, async (req, res) => {
 // ---------------------------------------------------------------------------
 router.get('/library/untagged', requireAdmin, async (req, res) => {
   await library.load();
+  if (config.libraryBackend === 'ma-api') {
+    // In MA mode there's no local mood-tag index. Return CLAP-analysed tracks
+    // as "fully analysed" — the admin UI can use this to see analysis coverage.
+    const cov = await _ma.getCoverage();
+    return res.json({
+      rows: [],
+      nextCursor: null,
+      maMode: true,
+      coverage: cov,
+    });
+  }
   const limit = Math.min(Math.max(parseIntSafe(req.query?.limit, 50) ?? 50, 1), 100);
   const cursor = decodeCursor(typeof req.query?.cursor === 'string' ? req.query.cursor : '');
   const startAlbumOffset = cursor.albumOffset;
@@ -322,6 +334,9 @@ router.get('/library/untagged', requireAdmin, async (req, res) => {
 // ---------------------------------------------------------------------------
 router.get('/library/coverage', requireAdmin, async (req, res) => {
   try {
+    if (config.libraryBackend === 'ma-api') {
+      return res.json(await _ma.getCoverage());
+    }
     if (req.query?.refresh === '1') coverage.refresh();
     res.json(await coverage.get());
   } catch (err: any) {
@@ -338,6 +353,9 @@ router.get('/library/coverage', requireAdmin, async (req, res) => {
 // (tagger.running / tagger.mode) for progress, stop via /tag-library/stop.
 // ---------------------------------------------------------------------------
 router.post('/library/analyze', requireAdmin, (req, res) => {
+  if (config.libraryBackend === 'ma-api') {
+    return res.status(400).json({ error: 'Audio analysis is managed by Music Assistant in ma-api mode' });
+  }
   if (tagger.running) return res.status(409).json({ error: 'a tagger/analyzer run is already active', tagger });
   const limit = parseIntSafe(req.body?.limit, null);
   startAnalyzer({ limit: limit ?? undefined, audio: true });
@@ -361,6 +379,9 @@ router.post('/library/analyze', requireAdmin, (req, res) => {
 // best-effort: a failure there logs and continues to the LLM step.
 // ---------------------------------------------------------------------------
 router.post('/library/retag', requireAdmin, async (req, res) => {
+  if (config.libraryBackend === 'ma-api') {
+    return res.status(400).json({ error: 'Mood retagging is not available in ma-api mode' });
+  }
   const id = req.body?.id;
   if (!id || typeof id !== 'string') return res.status(400).json({ error: 'id is required' });
   try {

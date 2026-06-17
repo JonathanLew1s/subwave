@@ -44,7 +44,7 @@ export const config = {
   // Which library backend supplies track discovery and streaming URIs.
   // 'navidrome' (default): Subsonic/OpenSubsonic API — the upstream-tracked path.
   // 'music-assistant': MA REST + local file paths via MA_MUSIC_ROOT.
-  libraryBackend: (process.env.LIBRARY_BACKEND || 'navidrome') as 'navidrome' | 'music-assistant',
+  libraryBackend: (process.env.LIBRARY_BACKEND || 'navidrome') as 'navidrome' | 'ma-api',
   navidrome: {
     url: process.env.NAVIDROME_URL || 'http://navidrome:4533',
     user: process.env.NAVIDROME_USER || '',
@@ -52,19 +52,14 @@ export const config = {
     apiVersion: '1.16.1',
     clientName: 'sub-wave',
   },
-  // Music Assistant backend. Only used when LIBRARY_BACKEND=music-assistant.
-  // MA_MUSIC_ROOT: absolute path to the music library root, accessible to the
-  // controller container (same volume as MA). Used to build file:// URIs for
-  // Liquidsoap — no transcoding, no HTTP, direct local file reads.
-  //
-  // Auth (one of):
-  //   MA_API_TOKEN: long-lived JWT from MA UI (Profile → Long-lived tokens)
-  //   MA_USERNAME + MA_PASSWORD: used for auth/login on first connect
-  musicAssistant: {
-    url: process.env.MA_URL || 'http://music-assistant:8095',
-    apiToken: process.env.MA_API_TOKEN || process.env.MA_API_KEY || '',
-    username: process.env.MA_USERNAME || '',
-    password: process.env.MA_PASSWORD || '',
+  // Music Assistant DB API backend. Used when LIBRARY_BACKEND=ma-api.
+  // MA_DB_API_URL: base URL of the music-assistant-db-api sidecar.
+  // MA_DB_API_KEY: optional API key (matches the sidecar's MA_API_KEY setting).
+  // MA_MUSIC_ROOT: absolute path to the music root inside this container —
+  //   used to build file:// URIs for Liquidsoap (shared volume with MA).
+  maDbApi: {
+    url: process.env.MA_DB_API_URL || 'http://music-assistant:8096',
+    apiKey: process.env.MA_DB_API_KEY || '',
     musicRoot: process.env.MA_MUSIC_ROOT || '',
   },
   ollama: {

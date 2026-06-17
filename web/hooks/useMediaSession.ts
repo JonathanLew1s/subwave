@@ -139,10 +139,10 @@ export function useMediaSession({
     if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return;
     if (!('MediaMetadata' in window)) return;
 
-    const subsonicId = nowPlaying?.subsonic_id;
-    const coverArt: MediaImage | null = subsonicId
+    const trackCoverId = nowPlaying?.ma_id;
+    const coverArt: MediaImage | null = trackCoverId
       ? {
-          src: `${apiUrl}/cover/${encodeURIComponent(subsonicId)}`,
+          src: `${apiUrl}/cover/${encodeURIComponent(trackCoverId)}`,
           sizes: '512x512',
           type: 'image/jpeg',
         }
@@ -190,7 +190,7 @@ export function useMediaSession({
     nowPlaying?.title,
     nowPlaying?.artist,
     nowPlaying?.album,
-    nowPlaying?.subsonic_id,
+    nowPlaying?.ma_id,
     talking,
     personaAvatarUrl,
     personaName,

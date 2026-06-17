@@ -29,15 +29,15 @@ export default memo(function CenterStage({ nowPlaying, trackStartedAt, feed, djL
   const elapsed = useElapsed(trackStartedAt);
   const has = !!nowPlaying?.title;
   const duration = nowPlaying?.duration ?? 0;
-  const subsonicId = nowPlaying?.subsonic_id ?? null;
-  const coverSrc = subsonicId
-    ? `${apiUrl}/cover/${encodeURIComponent(subsonicId)}`
+  const trackCoverId = nowPlaying?.ma_id || null;
+  const coverSrc = trackCoverId
+    ? `${apiUrl}/cover/${encodeURIComponent(trackCoverId)}`
     : null;
   // Title key keeps placeholder + real titles in the same AnimatePresence so
   // the first-track-arrives transition cross-dissolves the "scanning" line out.
   const titleKey = has ? `t:${nowPlaying?.title}` : 'placeholder';
 
-  // Ripple bursts for ~3s on two signals: every track change (subsonic_id
+  // Ripple bursts for ~3s on two signals: every track change (trackCoverId
   // flip), and every new DJ turn (voice/dj) landing in the feed.
   // djLineOn is a listener preference for the ticker, not a "talking now"
   // flag, so it can't gate the ripple.
@@ -55,11 +55,11 @@ export default memo(function CenterStage({ nowPlaying, trackStartedAt, feed, djL
 
   const [trackBurst, setTrackBurst] = useState(false);
   useEffect(() => {
-    if (!subsonicId) return;
+    if (!trackCoverId) return;
     setTrackBurst(true);
     const t = setTimeout(() => setTrackBurst(false), 3000);
     return () => clearTimeout(t);
-  }, [subsonicId]);
+  }, [trackCoverId]);
 
   const [djBurst, setDjBurst] = useState(false);
   useEffect(() => {

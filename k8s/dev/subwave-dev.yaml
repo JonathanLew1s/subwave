@@ -1,0 +1,377 @@
+# SUB/WAVE dev deployment — MA backend branch
+# Schedules on Longhorn-enabled amd64 nodes (same affinity as prod).
+# Access: http://<any-node-ip>:30700  (web + stream + API via Caddy NodePort)
+#         e.g. http://10.0.0.103:30700 (talos-nas-01)
+#              http://10.0.0.101:30700 (talos-prox1-01)
+#
+# Deploy:   kubectl apply -f k8s/dev/subwave-dev.yaml --kubeconfig ~/code/talos/kubeconfig
+# Teardown: kubectl delete namespace subwave-dev --kubeconfig ~/code/talos/kubeconfig
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: subwave-dev
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: subwave-dev-env
+  namespace: subwave-dev
+type: Opaque
+stringData:
+  ADMIN_USER: admin
+  ADMIN_PASS: subwave
+  SITE_URL: http://10.0.0.103:30700
+  NODE_ENV: production
+  LIBRARY_BACKEND: ma-api
+  MA_DB_API_URL: http://ma-db-api.music-assistant.svc.cluster.local:8096
+  MA_DB_API_KEY: ""
+  MA_MUSIC_ROOT: /music
+---
+# Shared state PVC — RWX via Longhorn (broadcast + controller both need it)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: subwave-dev-state
+  namespace: subwave-dev
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: longhorn
+  resources:
+    requests:
+      storage: 2Gi
+---
+# NFS PV — k8s nodes are on 10.0.0.x, NAS at 10.0.0.25 is directly reachable
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: subwave-dev-music
+spec:
+  capacity:
+    storage: 1Ti
+  accessModes: [ReadOnlyMany]
+  nfs:
+    server: 10.0.0.25
+    path: /volume1/Media/Media/Music
+  persistentVolumeReclaimPolicy: Retain
+  claimRef:
+    name: subwave-dev-music
+    namespace: subwave-dev
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: subwave-dev-music
+  namespace: subwave-dev
+spec:
+  accessModes: [ReadOnlyMany]
+  resources:
+    requests:
+      storage: 1Ti
+  volumeName: subwave-dev-music
+---
+# Broadcast — reuses existing prod image (no radio.liq changes)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: broadcast
+  namespace: subwave-dev
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: broadcast
+  template:
+    metadata:
+      labels:
+        app: broadcast
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: homelab.node/longhorn
+                    operator: In
+                    values:
+                      - enabled
+      containers:
+        - name: broadcast
+          image: ghcr.io/jonathanlew1s/subwave-broadcast:sha-c198e2a@sha256:8cd661a0c005c12badf8beda90f241c592f7b9cf5fa963bd79a838cc1a07de4f
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: TZ
+              value: Europe/London
+            - name: ICECAST_SOURCE_PASSWORD
+              value: ""
+            - name: ICECAST_ADMIN_PASSWORD
+              value: ""
+            - name: ICECAST_RELAY_PASSWORD
+              value: ""
+          ports:
+            - name: icecast
+              containerPort: 7702
+            - name: telnet
+              containerPort: 1234
+          volumeMounts:
+            - name: state
+              mountPath: /var/sub-wave
+            - name: state
+              mountPath: /var/log/liquidsoap
+              subPath: logs
+            - name: music
+              mountPath: /music
+              readOnly: true
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "1000m"
+          startupProbe:
+            httpGet:
+              path: /status-json.xsl
+              port: icecast
+            periodSeconds: 5
+            failureThreshold: 24
+      volumes:
+        - name: state
+          persistentVolumeClaim:
+            claimName: subwave-dev-state
+        - name: music
+          persistentVolumeClaim:
+            claimName: subwave-dev-music
+---
+# Controller — MA backend amd64 image
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: controller
+  namespace: subwave-dev
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: controller
+  template:
+    metadata:
+      labels:
+        app: controller
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: homelab.node/longhorn
+                    operator: In
+                    values:
+                      - enabled
+      containers:
+        - name: controller
+          image: ghcr.io/jonathanlew1s/subwave-controller:ma-backend
+          imagePullPolicy: Always
+          envFrom:
+            - secretRef:
+                name: subwave-dev-env
+          env:
+            - name: TZ
+              value: Europe/London
+            - name: STATE_DIR
+              value: /var/sub-wave
+          ports:
+            - name: http
+              containerPort: 7701
+          volumeMounts:
+            - name: state
+              mountPath: /var/sub-wave
+            - name: music
+              mountPath: /music
+              readOnly: true
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "200m"
+            limits:
+              memory: "2Gi"
+              cpu: "2000m"
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+            failureThreshold: 36
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+      volumes:
+        - name: state
+          persistentVolumeClaim:
+            claimName: subwave-dev-state
+        - name: music
+          persistentVolumeClaim:
+            claimName: subwave-dev-music
+---
+# Web — MA backend amd64 image
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: subwave-dev
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: homelab.node/longhorn
+                    operator: In
+                    values:
+                      - enabled
+      containers:
+        - name: web
+          image: ghcr.io/jonathanlew1s/subwave-web:ma-backend
+          imagePullPolicy: Always
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: SUBWAVE_HOMEPAGE
+              value: player
+            - name: SITE_URL
+              value: http://10.0.0.103:30700
+            - name: CONTROLLER_INTERNAL_URL
+              value: http://controller:7701
+          ports:
+            - name: http
+              containerPort: 7700
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "768Mi"
+              cpu: "1000m"
+          startupProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 5
+            failureThreshold: 36
+---
+# Caddy — same prod image, baked Caddyfile: /api/* → controller, /stream.mp3 → broadcast, / → web
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: caddy
+  namespace: subwave-dev
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: caddy
+  template:
+    metadata:
+      labels:
+        app: caddy
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: homelab.node/longhorn
+                    operator: In
+                    values:
+                      - enabled
+      containers:
+        - name: caddy
+          image: ghcr.io/jonathanlew1s/subwave-caddy:sha-c198e2a@sha256:c1b3ffb74b3f43a81e281330ac93af39920adfa70d269c3e53a2409218e98e5d
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 80
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+              cpu: "500m"
+---
+# Internal ClusterIP services — bare names match Caddy's baked-in Caddyfile
+apiVersion: v1
+kind: Service
+metadata:
+  name: broadcast
+  namespace: subwave-dev
+spec:
+  selector:
+    app: broadcast
+  ports:
+    - name: icecast
+      port: 7702
+      targetPort: icecast
+    - name: telnet
+      port: 1234
+      targetPort: telnet
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: controller
+  namespace: subwave-dev
+spec:
+  selector:
+    app: controller
+  ports:
+    - name: http
+      port: 7701
+      targetPort: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: subwave-dev
+spec:
+  selector:
+    app: web
+  ports:
+    - name: http
+      port: 7700
+      targetPort: http
+---
+# NodePort on 30700 — reachable from any k8s node IP on the LAN
+apiVersion: v1
+kind: Service
+metadata:
+  name: caddy-nodeport
+  namespace: subwave-dev
+spec:
+  type: NodePort
+  selector:
+    app: caddy
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      nodePort: 30700

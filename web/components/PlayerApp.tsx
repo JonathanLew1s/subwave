@@ -108,9 +108,9 @@ export default function PlayerApp({ contained = false }: PlayerAppProps) {
   // Art-derived ambient wash — extract a couple of colours from the current
   // cover and feed them to the gradient layer behind the player. Same coverSrc
   // shape as CenterStage so the extraction hits the controller's cached proxy.
-  const coverSubsonicId = nowPlaying?.subsonic_id ?? null;
-  const coverSrc = coverSubsonicId
-    ? `${apiUrl}/cover/${encodeURIComponent(coverSubsonicId)}`
+  const coverTrackId = nowPlaying?.ma_id || null;
+  const coverSrc = coverTrackId
+    ? `${apiUrl}/cover/${encodeURIComponent(coverTrackId)}`
     : null;
   const coverColors = useCoverColors(coverSrc);
   const ambientRef = useRef<HTMLDivElement | null>(null);

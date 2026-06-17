@@ -257,7 +257,7 @@ export function buildPickerTools({
       execute: async ({ mood, energy }) => {
         try {
           await library.load();
-          let rows = library.songsByMood(mood);
+          let rows = await library.songsByMood(mood);
           if (energy) rows = rows.filter((r: any) => r.energy === energy);
           return collect(rows);
         }
@@ -269,7 +269,7 @@ export function buildPickerTools({
       description: 'Songs tagged with a specific energy level: low (slow / mellow / ambient), medium (mid-tempo / steady), or high (uptempo / driving). Use for time-of-day or activity-based picks the mood vocab alone can\'t express — e.g. high for a workout, low for a wind-down, medium for a commute.',
       inputSchema: z.object({ energy: z.enum(['low', 'medium', 'high']) }),
       execute: async ({ energy }) => {
-        try { await library.load(); return collect(library.songsByEnergy(energy)); }
+        try { await library.load(); return collect(await library.songsByEnergy(energy)); }
         catch (err) { return { error: err.message }; }
       },
     }),
@@ -281,7 +281,7 @@ export function buildPickerTools({
         k: z.number().int().min(1).max(50).default(20),
       }),
       execute: async ({ songId, k }) => {
-        try { await library.load(); return collect(library.tracksLikeThis(songId, k)); }
+        try { await library.load(); return collect(await library.tracksLikeThis(songId, k)); }
         catch (err) { return { error: err.message }; }
       },
     }),
@@ -293,7 +293,7 @@ export function buildPickerTools({
         k: z.number().int().min(1).max(50).default(20),
       }),
       execute: async ({ songId, k }) => {
-        try { await library.load(); return collect(library.tracksLikeThisAudio(songId, k)); }
+        try { await library.load(); return collect(await library.tracksLikeThisAudio(songId, k)); }
         catch (err) { return { error: err.message }; }
       },
     }),

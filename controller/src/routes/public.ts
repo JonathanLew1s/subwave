@@ -6,6 +6,7 @@ import { stat, readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import * as subsonic from '../music/library-backend.js';
 import * as settings from '../settings.js';
+import { config } from '../config.js';
 import { getFullContext } from '../context.js';
 import { queue } from '../broadcast/queue.js';
 import * as session from '../broadcast/session.js';
@@ -75,7 +76,14 @@ router.get('/cover/:id', async (req, res) => {
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 5000);
-    const r = await fetch(subsonic.getCoverArtUrl(id, 512), { signal: ctrl.signal });
+    // In ma-api mode getCoverArtUrl() already returns the sidecar URL with
+    // auth headers not needed on the internal call — fetch directly.
+    const coverUrl = subsonic.getCoverArtUrl(id, 512);
+    const coverHeaders: Record<string, string> = {};
+    if (config.libraryBackend === 'ma-api' && config.maDbApi.apiKey) {
+      coverHeaders['X-API-Key'] = config.maDbApi.apiKey;
+    }
+    const r = await fetch(coverUrl, { signal: ctrl.signal, headers: coverHeaders });
     clearTimeout(timer);
     if (!r.ok) return res.status(502).end();
     const entry = {

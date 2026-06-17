@@ -11,10 +11,13 @@
 
 import * as db from './library-db.js';
 import { resolveEmbeddingDim } from './embeddings.js';
+import { config } from '../config.js';
+import * as _ma from './library-ma.js';
 
 let loaded = false;
 
 export async function load() {
+  if (config.libraryBackend === 'ma-api') { await _ma.load(); return; }
   if (loaded) return;
   // adoptStoredDim:true makes the live controller honour whatever dim the tagger
   // actually probed and recorded, instead of trusting the name→dim guess. A
@@ -120,7 +123,8 @@ const MOOD_NEIGHBOURS: Record<string, string[]> = {
 // 12 leaves comfortable margin above the picker's CAP_MOOD_LIBRARY (10).
 const MOOD_MIN_EXACT = 12;
 
-export function songsByMood(mood: string | null | undefined): any[] {
+export async function songsByMood(mood: string | null | undefined): Promise<any[]> {
+  if (config.libraryBackend === 'ma-api') return _ma.songsByMood(mood);
   if (!mood || !loaded) return [];
   const flatten = (rows: db.TrackRecord[]) =>
     rows.map(r => ({
@@ -154,12 +158,13 @@ export function songsByMood(mood: string | null | undefined): any[] {
 // Union of songsByMood() across multiple moods, deduped by id. Shows now
 // declare 1-3 moods; this widens the candidate universe accordingly while
 // reusing the same per-mood neighbour-widening logic above.
-export function songsByMoods(moods: string[] | null | undefined): any[] {
+export async function songsByMoods(moods: string[] | null | undefined): Promise<any[]> {
+  if (config.libraryBackend === 'ma-api') return _ma.songsByMoods(moods);
   if (!moods || !moods.length) return [];
   const seen = new Set<string>();
   const out: any[] = [];
   for (const mood of moods) {
-    for (const row of songsByMood(mood)) {
+    for (const row of await songsByMood(mood)) {
       if (seen.has(row.id)) continue;
       out.push(row);
       seen.add(row.id);
@@ -204,7 +209,8 @@ function slimTrack(r: db.TrackRecord) {
   };
 }
 
-export function songsByEnergy(energy: string | null | undefined): any[] {
+export async function songsByEnergy(energy: string | null | undefined): Promise<any[]> {
+  if (config.libraryBackend === 'ma-api') return _ma.songsByEnergy(energy);
   if (!energy || !loaded) return [];
   if (energy !== 'low' && energy !== 'medium' && energy !== 'high') return [];
   return db.songsByEnergy(energy).map(slimTrack);
@@ -220,7 +226,8 @@ export function songsByEnergy(energy: string | null | undefined): any[] {
 // scoped to tagged tracks — the same set that carries embeddings) and KNN from
 // the first candidate that has one. Tracks with no embedding and no title match
 // return []; callers fall back to other sources.
-export function tracksLikeThis(seed: string, k: number): any[] {
+export async function tracksLikeThis(seed: string, k: number): Promise<any[]> {
+  if (config.libraryBackend === 'ma-api') return _ma.tracksLikeThis(seed, k);
   if (!loaded || !seed) return [];
   let hits = db.knnById(seed, k);
   if (hits.length === 0) {
@@ -246,7 +253,8 @@ export function tracksLikeThis(seed: string, k: number): any[] {
 // (the agent often passes a title rather than an id). Returns [] when the seed
 // has no audio vector — un-analysed library, or analysis backend without CLAP —
 // so callers fall through to the other sources exactly like the text path.
-export function tracksLikeThisAudio(seed: string, k: number): any[] {
+export async function tracksLikeThisAudio(seed: string, k: number): Promise<any[]> {
+  if (config.libraryBackend === 'ma-api') return _ma.tracksLikeThisAudio(seed, k);
   if (!loaded || !seed) return [];
   let hits = db.knnAudioById(seed, k);
   if (hits.length === 0) {
@@ -322,6 +330,7 @@ export function tracksByAudioVector(vec: number[] | Float32Array, k: number): an
 }
 
 export function stats() {
+  if (config.libraryBackend === 'ma-api') return _ma.stats();
   if (!loaded) {
     return { total: 0, distinctArtists: 0, byMood: {}, byEnergy: {}, byGenre: {}, updatedAt: null };
   }
@@ -377,7 +386,8 @@ export interface FilteredRow {
   instrumental?: boolean | null;
 }
 
-export function filter(opts: FilterOpts = {}): { total: number; rows: FilteredRow[] } {
+export async function filter(opts: FilterOpts = {}): Promise<{ total: number; rows: FilteredRow[] }> {
+  if (config.libraryBackend === 'ma-api') return _ma.filter(opts);
   if (!loaded) return { total: 0, rows: [] };
   const res = db.filter(opts);
   return {

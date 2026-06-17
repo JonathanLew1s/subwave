@@ -1,15 +1,14 @@
 // Routes library calls to the configured backend.
 //
-// Default: subsonic (Navidrome) — the upstream-tracked path.
-// Set LIBRARY_BACKEND=music-assistant (or settings.library.backend) to use MA.
+// LIBRARY_BACKEND=navidrome (default): Subsonic/OpenSubsonic via subsonic.ts
+// LIBRARY_BACKEND=ma-api: music-assistant-db-api REST sidecar via ma-db-api.ts
 //
-// Both backend modules are imported eagerly so there is no async barrier at
-// first use. The active backend is selected on first call from config.libraryBackend,
-// which server.ts populates from settings.json after startup (env always wins).
-// Callers never know which backend is active — they import from here and call normally.
+// Both modules are imported eagerly — no async barrier on first use. The
+// active backend is fixed at startup from config.libraryBackend (env wins over
+// settings.json). Callers never reference a backend directly.
 
 import * as _s from './subsonic.js';
-import * as _m from './ma-api.js';
+import * as _m from './ma-db-api.js';
 import { config } from '../config.js';
 
 type S = typeof _s;
@@ -20,7 +19,7 @@ let _b: S | null = null;
 // config.libraryBackend before any library call happens (first pick fires
 // after the event loop yields, well after startup completes).
 const b = (): S =>
-  (_b ??= config.libraryBackend === 'music-assistant' ? (_m as unknown as S) : _s);
+  (_b ??= config.libraryBackend === 'ma-api' ? (_m as unknown as S) : _s);
 
 // Reset for tests or hot-reload scenarios (call after changing config.libraryBackend).
 export function resetBackend() { _b = null; }

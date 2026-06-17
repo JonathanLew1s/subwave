@@ -4,8 +4,8 @@ import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import Link from 'next/link';
 import SignInForm from '@/components/admin/SignInForm';
-import { useWizard, STEP_ORDER, STEP_LABELS } from './useWizard';
-import { DjStep, JinglesStep, LlmStep, NavidromeStep, ReviewStep, TtsStep } from './steps';
+import { useWizard, STEP_LABELS } from './useWizard';
+import { DjStep, JinglesStep, LlmStep, MaStep, NavidromeStep, ReviewStep, TtsStep } from './steps';
 
 // Outer chrome for the first-run wizard. Sign-in gate (admin creds from .env),
 // step indicator, body, and back/next buttons. The Review step calls `onDone`
@@ -59,6 +59,7 @@ export default function WizardShell() {
   }
 
   const body =
+    w.step === 'ma' ? <MaStep w={w} /> :
     w.step === 'navidrome' ? <NavidromeStep w={w} /> :
     w.step === 'llm' ? <LlmStep w={w} /> :
     w.step === 'tts' ? <TtsStep w={w} /> :
@@ -73,12 +74,12 @@ export default function WizardShell() {
           SUB/WAVE — first-run setup
         </p>
         <h1 className="mt-1 text-2xl font-semibold text-ink">
-          Step {w.stepIdx + 1} of {STEP_ORDER.length}
+          Step {w.stepIdx + 1} of {w.stepOrder.length}
         </h1>
       </div>
 
       <ol className="mb-8 flex flex-wrap gap-2">
-        {STEP_ORDER.map((id, i) => (
+        {w.stepOrder.map((id, i) => (
           <li
             key={id}
             className={

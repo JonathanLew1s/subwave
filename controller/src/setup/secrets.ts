@@ -30,6 +30,7 @@ export const SECRET_ENV_KEYS = [
   'LASTFM_API_SECRET',
   'LASTFM_SESSION_KEY',
   'LISTENBRAINZ_USER_TOKEN',
+  'MA_API_TOKEN',
 ];
 
 // Read state/secrets.env and merge into process.env for keys that aren't

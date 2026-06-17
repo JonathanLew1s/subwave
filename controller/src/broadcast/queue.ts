@@ -503,7 +503,8 @@ class Queue {
   // Called by the now-playing watcher when Liquidsoap reports a new track.
   onTrackStarted(np: any) {
     if (!np || !np.title) return;
-    const key = `${np.subsonic_id || ''}|${np.title}|${np.artist || ''}`;
+    const trackId = np.ma_id || '';
+    const key = `${trackId}|${np.title}|${np.artist || ''}`;
     if (key === this.lastSeenKey) return;
     this.lastSeenKey = key;
 
@@ -535,11 +536,11 @@ class Queue {
       }
     }
 
-    // Match upcoming by subsonic_id first (reliable), fall back to title+artist
-    // for older items that pre-date the id annotation.
+    // Match upcoming by ma_id first (reliable), fall back to title+artist
+    // for tracks that pre-date the id annotation (jingles, auto-playlist items).
     let idx = -1;
-    if (np.subsonic_id) {
-      idx = this.upcoming.findIndex(u => u.track.id && u.track.id === np.subsonic_id);
+    if (trackId) {
+      idx = this.upcoming.findIndex(u => u.track.id && u.track.id === trackId);
     }
     if (idx < 0) {
       idx = this.upcoming.findIndex(
@@ -584,7 +585,7 @@ class Queue {
       }
       this.current = {
         track: {
-          id: np.subsonic_id || null,
+          id: np.ma_id || null,
           title: np.title,
           artist: np.artist,
           album: np.album,

@@ -78,12 +78,12 @@ function takeWaypoint(rs: RunState): number[] | null {
 // in the same direction the tempo/key target already nudges. No-op (leaves the
 // run a plain tempo/key run) when the current track or the destination has no
 // audio coverage. `totalSteps` is the number of picks the run will influence.
-function maybeAttachJourney(rs: RunState, current: any, totalSteps: number): void {
+async function maybeAttachJourney(rs: RunState, current: any, totalSteps: number): Promise<void> {
   const startId = current?.id;
   if (!startId) return;
   try {
     const destEnergy = energyForDaypart().speed >= 1 ? 'high' : 'low';
-    const destIds = shuffle(library.songsByEnergy(destEnergy).map((s: any) => s.id))
+    const destIds = shuffle((await library.songsByEnergy(destEnergy)).map((s: any) => s.id))
       .slice(0, JOURNEY_DEST_SAMPLE);
     if (destIds.length === 0) return;
     const j = journey.buildJourney({ startId, endIds: destIds, steps: totalSteps });
@@ -134,7 +134,7 @@ function runStartProbability(): number {
 // anything in DJ mode with an analysed current track.
 const NO_RUN: RunStep = { rankTarget: null, audioWaypoint: null };
 
-function advanceRun(djMode: boolean, current: any): RunStep {
+async function advanceRun(djMode: boolean, current: any): Promise<RunStep> {
   if (!djMode) { runState = null; return NO_RUN; }
   if (runState && runState.remaining > 0) {
     runState.remaining--;
@@ -155,7 +155,7 @@ function advanceRun(djMode: boolean, current: any): RunStep {
   runState = { bpm: target.bpm, key: target.key, remaining: extra };
   // Overlay a sonic journey if the audio index can support one (this pick + the
   // `extra` that follow → extra + 1 total waypoints). No-op otherwise.
-  maybeAttachJourney(runState, current, extra + 1);
+  await maybeAttachJourney(runState, current, extra + 1);
   return { rankTarget: target, audioWaypoint: takeWaypoint(runState) };
 }
 
@@ -337,6 +337,7 @@ function trackFields(song) {
     album: song.album,
     year: song.year,
     genre: song.genre,
+    path: song.path,
   };
 }
 
@@ -470,7 +471,7 @@ export async function runTrackEvent(queue, ctx, { wantLink }) {
     // Feature 4 + Phase 2 — advance/maybe-start a mini-run; get the tempo/key
     // re-rank target and (when the audio index supports it) a sonic-journey
     // waypoint for the pool's audio anchor.
-    const { rankTarget, audioWaypoint } = advanceRun(djMode, current);
+    const { rankTarget, audioWaypoint } = await advanceRun(djMode, current);
     const inRun = runActive();
 
     // The link clause differs in DJ mode: a working DJ doesn't just ease into

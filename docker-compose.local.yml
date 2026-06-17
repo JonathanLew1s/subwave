@@ -9,6 +9,9 @@
 #   - Mounts the MA library.db snapshot into the controller
 #   - Adds MA env vars
 #   - Bind-mounts controller/src + scripts for hot reload
+#
+# Music files are not available on local Docker — use the k8s dev manifest
+# (k8s/dev/subwave-dev.yaml) for end-to-end testing with the NFS music volume.
 
 services:
   controller:
@@ -18,13 +21,11 @@ services:
       context: .
       dockerfile: docker/Dockerfile.controller
     environment:
-      - LIBRARY_BACKEND=${LIBRARY_BACKEND:-music-assistant}
-      - MA_URL=${MA_URL:-http://host.docker.internal:8095}
+      - LIBRARY_BACKEND=${LIBRARY_BACKEND:-ma-api}
+      - MA_DB_API_URL=${MA_DB_API_URL:-http://host.docker.internal:8096}
+      - MA_DB_API_KEY=${MA_DB_API_KEY:-}
       - MA_MUSIC_ROOT=${MA_MUSIC_ROOT:-/music}
-      - MA_DB_PATH=${MA_DB_PATH:-/var/sub-wave/ma/library.db}
     volumes:
-      # MA library.db snapshot (copy from k3d or from homelab)
-      - ${MA_DB_SNAPSHOT:-/tmp/ma-sync}:/var/sub-wave/ma:ro
       # Hot-reload source (optional — remove if you don't need it)
       - ./controller/src:/app/src
       - ./controller/scripts:/app/scripts

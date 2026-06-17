@@ -151,7 +151,7 @@ export async function buildCandidates(mood: string | null | undefined, recentIds
   // run), so the picker silently falls through to the other sources.
   if (currentTrack?.id) {
     try {
-      const knn = library.tracksLikeThis(currentTrack.id, 15);
+      const knn = await library.tracksLikeThis(currentTrack.id, 15);
       add('embedding-similar', sampleWithRecentFallback(knn, recentIds, scaledCap(CAP_EMBEDDING_SIMILAR)));
     } catch {}
   }
@@ -189,14 +189,14 @@ export async function buildCandidates(mood: string | null | undefined, recentIds
     } catch {}
   } else if (currentTrack?.id) {
     try {
-      const knn = library.tracksLikeThisAudio(currentTrack.id, 15);
+      const knn = await library.tracksLikeThisAudio(currentTrack.id, 15);
       add('audio-similar', sampleWithRecentFallback(knn, recentIds, CAP_AUDIO_SIMILAR));
     } catch {}
   }
 
   // 2. Mood-tagged library (LLM-built tags, may be sparse).
   if (mood) {
-    const moodHits = shuffle(library.songsByMood(mood));
+    const moodHits = shuffle(await library.songsByMood(mood));
     add('mood-library', sampleWithRecentFallback(moodHits, recentIds, scaledCap(CAP_MOOD_LIBRARY)));
   }
 

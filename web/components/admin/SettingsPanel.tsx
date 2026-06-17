@@ -182,8 +182,8 @@ const DEFAULT_EXCLUDE_PATTERNS: string[] = [
 ];
 
 interface LibraryForm {
-  backend: 'navidrome' | 'music-assistant';
-  musicAssistant: { url: string; musicRoot: string };
+  backend: 'navidrome' | 'ma-api';
+  maDbApi: { url: string; apiKey: string; musicRoot: string };
 }
 
 interface FormState {
@@ -261,12 +261,11 @@ interface SettingsData {
       listenbrainz?: Partial<ScrobbleListenbrainzForm>;
     };
     library?: {
-      backend?: 'navidrome' | 'music-assistant';
-      musicAssistant?: { url?: string; musicRoot?: string };
+      backend?: 'navidrome' | 'ma-api';
+      maDbApi?: { url?: string; apiKey?: string; musicRoot?: string };
     };
   };
-  effectiveLibraryBackend?: 'navidrome' | 'music-assistant';
-  maDbPath?: string;
+  effectiveLibraryBackend?: 'navidrome' | 'ma-api';
   tagger?: { running?: boolean; mode?: string | null };
   tts?: {
     engines?: string[];
@@ -439,9 +438,10 @@ export default function SettingsPanel() {
       },
       library: {
         backend: v.library?.backend ?? 'navidrome',
-        musicAssistant: {
-          url: v.library?.musicAssistant?.url ?? '',
-          musicRoot: v.library?.musicAssistant?.musicRoot ?? '',
+        maDbApi: {
+          url: v.library?.maDbApi?.url ?? '',
+          apiKey: v.library?.maDbApi?.apiKey ?? '',
+          musicRoot: v.library?.maDbApi?.musicRoot ?? '',
         },
       },
     });
@@ -2312,45 +2312,17 @@ interface LibraryBackendSectionProps extends SectionProps {
   adminFetch: (path: string, init?: RequestInit) => Promise<Response>;
 }
 
-function LibraryBackendSection({ data, form, setForm, busy, saveSettings, adminFetch }: LibraryBackendSectionProps) {
-  const [syncBusy, setSyncBusy] = useState(false);
-  const [syncLog, setSyncLog] = useState<string[]>([]);
-
+function LibraryBackendSection({ data, form, setForm, busy, saveSettings }: LibraryBackendSectionProps) {
   const saved = data?.values?.library ?? {};
   const effective = data?.effectiveLibraryBackend ?? saved.backend ?? 'navidrome';
-  const isMA = form.library.backend === 'music-assistant';
+  const isMA = form.library.backend === 'ma-api';
   const envOverride = !!data?.effectiveLibraryBackend && data.effectiveLibraryBackend !== saved.backend;
 
   const libDirty =
     form.library.backend !== (saved.backend ?? 'navidrome') ||
-    form.library.musicAssistant.url !== (saved.musicAssistant?.url ?? '') ||
-    form.library.musicAssistant.musicRoot !== (saved.musicAssistant?.musicRoot ?? '');
-
-  const maDbSet = !!data?.maDbPath;
-  const taggerRunning = !!data?.tagger?.running;
-  const taggerMode = data?.tagger?.mode;
-
-  async function runSync(opts: { full?: boolean } = {}) {
-    setSyncBusy(true);
-    setSyncLog(['Starting sync…']);
-    try {
-      const r = await adminFetch('/api/sync-ma', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(opts),
-      });
-      const j = await r.json();
-      if (!r.ok) {
-        setSyncLog([`Error: ${j.error ?? r.status}`]);
-      } else {
-        setSyncLog([`Sync started (${opts.full ? 'full' : 'incremental'}). Watch Library tagger section for progress.`]);
-      }
-    } catch (e) {
-      setSyncLog([`Error: ${e instanceof Error ? e.message : String(e)}`]);
-    } finally {
-      setSyncBusy(false);
-    }
-  }
+    form.library.maDbApi.url !== (saved.maDbApi?.url ?? '') ||
+    form.library.maDbApi.apiKey !== (saved.maDbApi?.apiKey ?? '') ||
+    form.library.maDbApi.musicRoot !== (saved.maDbApi?.musicRoot ?? '');
 
   return (
     <>
@@ -2360,11 +2332,10 @@ function LibraryBackendSection({ data, form, setForm, busy, saveSettings, adminF
         sub={<>
           <strong>Navidrome</strong> (default) uses the Subsonic/OpenSubsonic API — the upstream-tracked path,
           works out of the box for any Navidrome install.{' '}
-          <strong>Music Assistant</strong> reads MA&apos;s database directly and streams local files —
-          no Navidrome needed, no duplicate analysis. A <code>sync-ma</code> script
-          populates the library DB from MA. Switching requires a controller restart.
+          <strong>MA DB API</strong> queries the <code>music-assistant-db-api</code> sidecar and streams
+          local files from the shared music volume — no Navidrome needed. Switching requires a controller restart.
         </>}
-        metrics={[{ n: effective === 'music-assistant' ? 'MA' : 'NV', l: 'active backend' }]}
+        metrics={[{ n: effective === 'ma-api' ? 'MA' : 'NV', l: 'active backend' }]}
       />
 
       {envOverride && (
@@ -2384,32 +2355,45 @@ function LibraryBackendSection({ data, form, setForm, busy, saveSettings, adminF
             <Label>Active backend</Label>
             <Seg
               value={form.library.backend}
-              onChange={v => setForm(f => ({ ...f, library: { ...f.library, backend: v as 'navidrome' | 'music-assistant' } }))}
+              onChange={v => setForm(f => ({ ...f, library: { ...f.library, backend: v as 'navidrome' | 'ma-api' } }))}
               options={[
                 { id: 'navidrome', label: 'Navidrome' },
-                { id: 'music-assistant', label: 'Music Assistant' },
+                { id: 'ma-api', label: 'MA DB API' },
               ]}
             />
             <div className="field-hint">
               Navidrome: existing Subsonic setup, unchanged behaviour.
-              Music Assistant: direct DB sync + local file streaming, no Navidrome container needed.
+              MA DB API: queries the music-assistant-db-api sidecar, streams local files — no Navidrome needed.
             </div>
           </div>
 
           {isMA && (
             <>
               <div className="field">
-                <Label>MA server URL</Label>
+                <Label>MA DB API URL</Label>
                 <Input
                   className="max-w-[420px]"
-                  placeholder="http://music-assistant:8095"
-                  value={form.library.musicAssistant.url}
+                  placeholder="http://music-assistant:8096"
+                  value={form.library.maDbApi.url}
                   onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                    setForm(f => ({ ...f, library: { ...f.library, musicAssistant: { ...f.library.musicAssistant, url: e.target.value } } }))}
+                    setForm(f => ({ ...f, library: { ...f.library, maDbApi: { ...f.library.maDbApi, url: e.target.value } } }))}
                 />
                 <div className="field-hint">
-                  REST API base URL for the MA server. Override with <code>MA_URL</code> env var.
-                  Used for cover art, track discovery, and similar-song lookups.
+                  Base URL of the music-assistant-db-api sidecar. Override with <code>MA_DB_API_URL</code> env var.
+                </div>
+              </div>
+              <div className="field">
+                <Label>API key</Label>
+                <Input
+                  className="max-w-[420px]"
+                  placeholder="optional"
+                  type="password"
+                  value={form.library.maDbApi.apiKey}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                    setForm(f => ({ ...f, library: { ...f.library, maDbApi: { ...f.library.maDbApi, apiKey: e.target.value } } }))}
+                />
+                <div className="field-hint">
+                  Optional API key (matches the sidecar&apos;s <code>MA_API_KEY</code> setting). Override with <code>MA_DB_API_KEY</code> env var.
                 </div>
               </div>
               <div className="field">
@@ -2417,14 +2401,13 @@ function LibraryBackendSection({ data, form, setForm, busy, saveSettings, adminF
                 <Input
                   className="max-w-[420px]"
                   placeholder="/music"
-                  value={form.library.musicAssistant.musicRoot}
+                  value={form.library.maDbApi.musicRoot}
                   onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                    setForm(f => ({ ...f, library: { ...f.library, musicAssistant: { ...f.library.musicAssistant, musicRoot: e.target.value } } }))}
+                    setForm(f => ({ ...f, library: { ...f.library, maDbApi: { ...f.library.maDbApi, musicRoot: e.target.value } } }))}
                 />
                 <div className="field-hint">
                   Absolute path where the music library is mounted inside the controller container.
                   Liquidsoap must reach the same path. Override with <code>MA_MUSIC_ROOT</code> env var.
-                  Example: <code>/music</code> or <code>/var/sub-wave/music</code>.
                 </div>
               </div>
             </>
@@ -2440,61 +2423,6 @@ function LibraryBackendSection({ data, form, setForm, busy, saveSettings, adminF
           saveLabel="Save backend"
         />
       </Card>
-
-      {isMA && (
-        <Card title="MA sync" sub="populate library DB from Music Assistant">
-          <div className="grid gap-4">
-            <div className="text-[12px] leading-[1.6] text-muted">
-              The sync script reads MA&apos;s <code>library.db</code> and writes tracks, loudness,
-              BPM, key, beats, and popularity into SUB/WAVE&apos;s library DB. Run it after changing
-              MA&apos;s library or after MA finishes analysing new tracks.
-            </div>
-
-            {!maDbSet && (
-              <div className="flex items-start gap-2.5 border border-[var(--accent)] bg-[var(--ink-softer)] p-3">
-                <span className="mt-1 size-1.5 flex-none rounded-full bg-vermilion" />
-                <div className="text-[11px] leading-[1.5] text-muted">
-                  <span className="font-bold text-[var(--fg)]">MA_DB_PATH not set.</span>{' '}
-                  Set this env var to the path of MA&apos;s <code>library.db</code> (e.g. via{' '}
-                  <code>kubectl cp</code>) so the sync can read it. The sync cannot run without it.
-                </div>
-              </div>
-            )}
-
-            {taggerRunning && taggerMode === 'sync-ma' && (
-              <div className="flex items-center gap-2 text-[12px] text-[var(--accent)]">
-                <span className="inline-block size-2 animate-pulse rounded-full bg-current" />
-                Sync is running…
-              </div>
-            )}
-
-            {syncLog.length > 0 && (
-              <div className="rounded bg-[var(--ink-softer)] p-3 font-mono text-[11px] text-muted">
-                {syncLog.map((l, i) => <div key={i}>{l}</div>)}
-              </div>
-            )}
-
-            <div className="flex flex-wrap gap-2">
-              <Btn
-                onClick={() => runSync()}
-                disabled={syncBusy || taggerRunning || !maDbSet}
-              >
-                Run incremental sync
-              </Btn>
-              <Btn
-                onClick={() => runSync({ full: true })}
-                disabled={syncBusy || taggerRunning || !maDbSet}
-              >
-                Run full sync
-              </Btn>
-            </div>
-            <div className="text-[11px] text-muted">
-              <strong>Incremental</strong>: only tracks modified since last sync.{' '}
-              <strong>Full</strong>: re-reads all tracks from MA. Run full after the first setup or after <code>--reseed</code>.
-            </div>
-          </div>
-        </Card>
-      )}
     </>
   );
 }
