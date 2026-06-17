@@ -18,27 +18,27 @@ let _stats = {
 
 // ---------------------------------------------------------------------------
 // Mood → audio-feature energy range approximation.
-// MA has energy [0..1] from sonic_analysis. These bands let songsByMood()
-// return energetically appropriate tracks even without LLM mood tags.
+// MA's sonic_analysis energy tops out around 0.46 (vs Spotify's 0-1 scale).
+// Thresholds calibrated from actual distribution (p25=0.11, p50=0.16, p75=0.22).
 // ---------------------------------------------------------------------------
 const MOOD_ENERGY: Record<string, [number | null, number | null]> = {
-  energetic:   [0.65, null],
-  workout:     [0.65, null],
-  driving:     [0.55, null],
-  festival:    [0.60, null],
-  celebratory: [0.60, null],
-  sunny:       [0.45, null],
-  morning:     [0.35, 0.65],
-  cooking:     [0.30, 0.60],
-  evening:     [null, 0.55],
-  romantic:    [null, 0.50],
-  cultural:    [0.35, 0.75],
-  spiritual:   [null, 0.50],
-  calm:        [null, 0.40],
-  focus:       [0.25, 0.55],
-  reflective:  [null, 0.45],
-  rainy:       [null, 0.40],
-  night:       [null, 0.45],
+  energetic:   [0.28, null],
+  workout:     [0.28, null],
+  driving:     [0.24, null],
+  festival:    [0.26, null],
+  celebratory: [0.26, null],
+  sunny:       [0.20, null],
+  morning:     [0.15, 0.28],
+  cooking:     [0.13, 0.26],
+  evening:     [null, 0.24],
+  romantic:    [null, 0.22],
+  cultural:    [0.15, 0.32],
+  spiritual:   [null, 0.22],
+  calm:        [null, 0.17],
+  focus:       [0.11, 0.24],
+  reflective:  [null, 0.20],
+  rainy:       [null, 0.17],
+  night:       [null, 0.20],
 };
 
 // ---------------------------------------------------------------------------
@@ -89,8 +89,8 @@ function toFilteredRow(t: any): FilteredRow {
 }
 
 function energyLabel(e: number): string {
-  if (e >= 0.60) return 'high';
-  if (e >= 0.35) return 'medium';
+  if (e >= 0.22) return 'high';
+  if (e >= 0.11) return 'medium';
   return 'low';
 }
 
@@ -101,8 +101,9 @@ function energyLabel(e: number): string {
 export async function load(): Promise<void> {
   try {
     const h = await apiGet('/health/detailed');
+    // health/detailed returns { track_count, analysis_coverage: { bpm, clap, sonic, loudness } }
     _stats = {
-      total: h.total_tracks ?? h.total ?? 0,
+      total: h.track_count ?? h.total_tracks ?? h.total ?? 0,
       distinctArtists: h.total_artists ?? 0,
       byGenre: h.genres ?? {},
       updatedAt: new Date().toISOString(),
@@ -155,9 +156,9 @@ export async function songsByMoods(moods: string[] | null | undefined): Promise<
 export async function songsByEnergy(energy: string | null | undefined): Promise<any[]> {
   if (!energy) return [];
   const params: Record<string, any> = { limit: 50, order: 'random' };
-  if (energy === 'low') params.energy_max = 0.40;
-  else if (energy === 'medium') { params.energy_min = 0.35; params.energy_max = 0.65; }
-  else if (energy === 'high') params.energy_min = 0.60;
+  if (energy === 'low') params.energy_max = 0.11;
+  else if (energy === 'medium') { params.energy_min = 0.11; params.energy_max = 0.22; }
+  else if (energy === 'high') params.energy_min = 0.22;
   else return [];
   try {
     const data = await apiGet('/tracks', params);
@@ -198,9 +199,9 @@ export async function filter(opts: FilterOpts = {}): Promise<{ total: number; ro
   const offset = opts.offset ?? 0;
   const params: Record<string, any> = { limit: Math.min(limit * 8, 500), offset: 0 };
 
-  if (opts.energy === 'low') params.energy_max = 0.40;
-  else if (opts.energy === 'medium') { params.energy_min = 0.35; params.energy_max = 0.65; }
-  else if (opts.energy === 'high') params.energy_min = 0.60;
+  if (opts.energy === 'low') params.energy_max = 0.11;
+  else if (opts.energy === 'medium') { params.energy_min = 0.11; params.energy_max = 0.22; }
+  else if (opts.energy === 'high') params.energy_min = 0.22;
 
   let rows: FilteredRow[];
   try {
@@ -240,12 +241,53 @@ export async function filter(opts: FilterOpts = {}): Promise<{ total: number; ro
   return { total, rows: rows.slice(offset, offset + limit) };
 }
 
+function shapeObservatoryTrack(t: any): any {
+  return {
+    id: String(t.id),
+    title: t.title ?? null,
+    artist: t.artist ?? (t.artists?.[0] ?? null),
+    album: t.album ?? null,
+    year: t.year ?? null,
+    genre: t.genre ?? null,
+    durationSec: t.duration ?? null,
+    moods: [],
+    energy: t.analysis?.energy != null ? energyLabel(t.analysis.energy) : null,
+    source: 'ma-api',
+    confidence: null,
+    bpm: t.analysis?.bpm != null ? Math.round(t.analysis.bpm * 10) / 10 : null,
+    musicalKey: t.analysis?.camelot ?? t.analysis?.key ?? null,
+    analysisConfidence: null,
+    loudnessLufs: t.analysis?.loudness_lufs ?? null,
+    paceMean: null,
+    vocal: t.analysis?.instrumentalness != null
+      ? (t.analysis.instrumentalness > 0.5 ? 'instrumental' : 'vocal')
+      : null,
+  };
+}
+
+// Observatory data — returns all analysed tracks shaped for the constellation view.
+// Uses the dedicated /tracks/observatory endpoint which:
+//   - drives the query from audio_analysis (7K rows) instead of tracks (37K+)
+//   - caches results server-side for 5 minutes
+// Falls back to the paginated path if the sidecar is older and lacks the endpoint.
+export async function tracksForObservatory(max: number): Promise<any[]> {
+  try {
+    // 60s timeout: cold query scans 93K unindexed rows, takes ~10-20s first run.
+    // Sidecar caches for 30 min so warm hits return in ~200ms.
+    const data = await apiGet('/tracks/observatory', {}, 60_000);
+    const items: any[] = data.items ?? [];
+    return items.slice(0, max).map(shapeObservatoryTrack);
+  } catch {
+    return [];
+  }
+}
+
 // coverage endpoint shape
 export async function getCoverage(): Promise<any> {
   try {
     const h = await apiGet('/health/detailed');
-    const total = h.total_tracks ?? h.total ?? 0;
-    const withClap = h.with_clap ?? h.with_analysis ?? total;
+    const total = h.track_count ?? h.total_tracks ?? h.total ?? 0;
+    const withClap = h.analysis_coverage?.clap ?? h.with_clap ?? h.with_analysis ?? total;
     const pct = total > 0 ? Math.round((withClap / total) * 100) : null;
     return {
       tagged: withClap,      // "tagged" in local-DB terms ≈ "has CLAP analysis"

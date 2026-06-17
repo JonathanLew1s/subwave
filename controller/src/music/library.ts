@@ -386,6 +386,20 @@ export interface FilteredRow {
   instrumental?: boolean | null;
 }
 
+export async function getCoverage(): Promise<any> {
+  if (config.libraryBackend === 'ma-api') return _ma.getCoverage();
+  return null; // caller falls through to local coverage module
+}
+
+// All analysed tracks for the Observatory constellation view.
+// MA mode: paginated sidecar fetch with scalar-only analysis.
+// Local-DB mode: returns the allTagged() result directly.
+export async function allTaggedForObservatory(max: number): Promise<any[]> {
+  if (config.libraryBackend === 'ma-api') return _ma.tracksForObservatory(max);
+  if (!loaded) return [];
+  return db.allTagged();
+}
+
 export async function filter(opts: FilterOpts = {}): Promise<{ total: number; rows: FilteredRow[] }> {
   if (config.libraryBackend === 'ma-api') return _ma.filter(opts);
   if (!loaded) return { total: 0, rows: [] };

@@ -34,6 +34,9 @@ export interface Coverage {
   // null = still probing; false = no analysis backend (sidecar/librosa) running.
   analysisAvailable?: boolean | null;
   analysisBackend?: string | null;
+  // 'ma-api' when the library is backed by Music Assistant — acoustic analysis
+  // and audio fingerprinting are handled by MA, so those controls are hidden.
+  source?: string | null;
   // Whether the backend can emit CLAP "sounds-like" embeddings. false = engine
   // is up but on an image without the CLAP stack (an older tts-heavy) — drives
   // the active "pull the latest image" warning. null = unknown / still probing.
@@ -121,12 +124,12 @@ interface TaggingPanelProps {
 // One friendly sentence per pipeline phase — shown under the live progress so
 // the operator knows what the run is actually doing right now.
 const PHASE_HINT: Record<TaggerProgress['phase'], string> = {
-  walk: 'Reading the track list from Navidrome.',
+  walk: 'Reading the track list from the library.',
   enrich: 'Fetching Last.fm tags and lyrics that help the DJ understand each track.',
   embed: 'Computing similarity vectors so tags can spread between similar tracks.',
   seed: 'The DJ is deciding mood & energy for a representative set of tracks.',
   propagate: 'Spreading tags from tagged tracks to their closest sonic neighbours.',
-  learn: 'The DJ is re-checking tracks the automatic spread wasn’t confident about.',
+  learn: "The DJ is re-checking tracks the automatic spread wasn't confident about.",
   analyze: 'Measuring tempo and key, and fingerprinting how each track sounds.',
   done: 'Wrapping up.',
 };
@@ -163,6 +166,7 @@ export default function TaggingPanel(p: TaggingPanelProps) {
   // pass would skip vocal backfill (no-op), so warn rather than silently never
   // filling vocal ranges. Mirrors the CLAP `audioIncapable` warning above.
   const vocalIncapable = !analysisOff && p.coverage?.vocalAnalysisAvailable === false;
+  const isMA = p.coverage?.source === 'ma-api';
   const moodCount = p.libStats ? Object.keys(p.libStats.byMood || {}).length : 0;
   const lastTag = p.libStats?.updatedAt ? new Date(p.libStats.updatedAt).toLocaleString('en-GB') : '—';
   const anySel = !!(passes.reseed || passes.reEnrich || passes.reAnalyze || passes.upgrade);
@@ -190,10 +194,14 @@ export default function TaggingPanel(p: TaggingPanelProps) {
   }, [p.logOpen, p.tagger?.lastLog?.length]);
 
   const togglePass = (k: keyof RescanOpts) => setPasses(prev => ({ ...prev, [k]: !prev[k] }));
-  const allSelected = !!(passes.reseed && passes.reEnrich && passes.reAnalyze && passes.upgrade);
+  const allSelected = isMA
+    ? !!(passes.reEnrich && passes.upgrade)
+    : !!(passes.reseed && passes.reEnrich && passes.reAnalyze && passes.upgrade);
   const toggleAll = () => {
     const on = !allSelected;
-    setPasses({ reseed: on, reEnrich: on, reAnalyze: on, upgrade: on });
+    setPasses(isMA
+      ? { reseed: false, reEnrich: on, reAnalyze: false, upgrade: on }
+      : { reseed: on, reEnrich: on, reAnalyze: on, upgrade: on });
   };
   const clearPasses = () => setPasses({ reseed: false, reEnrich: false, reAnalyze: false, upgrade: false });
   // Re-embedding re-spends embedding calls — guard those runs behind a confirm;
@@ -345,21 +353,24 @@ export default function TaggingPanel(p: TaggingPanelProps) {
       {/* maintenance & advanced disclosure */}
       {maintOpen && (
         <div className="flex flex-col gap-3.5 border-t border-ink bg-[var(--ink-soft)] p-6">
-          {/* optional acoustic / audio-fingerprint passes — tucked away here so
-              the default view stays focused on mood & energy */}
+          {/* optional acoustic / audio-fingerprint passes — hidden when MA backend owns analysis */}
           <div className="flex flex-wrap items-center gap-x-3.5 gap-y-2">
             <span className="caption flex items-center gap-2">
               <Activity size={13} /> Acoustic analysis · bpm / key
             </span>
             <span className="lib-opt-tag">optional</span>
-            <span className="lib-minibar"><span ref={acousticFillRef} /></span>
+            {!isMA && <span className="lib-minibar"><span ref={acousticFillRef} /></span>}
             <span className="caption mono-num !tracking-[0.04em]">
-              {analysisOff ? 'engine off' : <>{num(analysed)} / {num(total)} · {apct != null ? `${apct}%` : '…'}</>}
+              {isMA
+                ? 'provided by Music Assistant'
+                : analysisOff ? 'engine off' : <>{num(analysed)} / {num(total)} · {apct != null ? `${apct}%` : '…'}</>}
             </span>
             <span className="caption basis-full !tracking-[0.04em] !normal-case">
-              {analysisOff
-                ? 'No analysis engine running — start the tts-heavy sidecar (docker compose --profile tts-heavy up -d) or configure a local librosa venv.'
-                : 'Improves beat-matching between tracks; tagging works fine without it.'}
+              {isMA
+                ? 'BPM and key come from Music Assistant — no local analysis engine needed.'
+                : analysisOff
+                  ? 'No analysis engine running — start the tts-heavy sidecar (docker compose --profile tts-heavy up -d) or configure a local librosa venv.'
+                  : 'Improves beat-matching between tracks; tagging works fine without it.'}
             </span>
           </div>
           <div className="flex flex-wrap items-center gap-x-3.5 gap-y-2 border-t border-dashed border-separator-strong pt-3.5">
@@ -367,17 +378,19 @@ export default function TaggingPanel(p: TaggingPanelProps) {
               <Activity size={13} /> Audio fingerprint · sounds-like
             </span>
             <span className="lib-opt-tag">optional</span>
-            <span className="lib-minibar"><span ref={audioFillRef} /></span>
+            {!isMA && <span className="lib-minibar"><span ref={audioFillRef} /></span>}
             <span className="caption mono-num !tracking-[0.04em]">
-              {analysisOff
-                ? 'engine off'
-                : audioIncapable
-                  ? 'engine missing CLAP'
-                  : audioOn
-                    ? <>{num(audioEmbedded)} / {num(total)} · {audpct != null ? `${audpct}%` : '…'}</>
-                    : p.audioEnabled ? 'enabled — not yet analysed' : 'off'}
+              {isMA
+                ? 'provided by Music Assistant'
+                : analysisOff
+                  ? 'engine off'
+                  : audioIncapable
+                    ? 'engine missing CLAP'
+                    : audioOn
+                      ? <>{num(audioEmbedded)} / {num(total)} · {audpct != null ? `${audpct}%` : '…'}</>
+                      : p.audioEnabled ? 'enabled — not yet analysed' : 'off'}
             </span>
-            {!analysisOff && p.audioEnabled != null && (
+            {!isMA && !analysisOff && p.audioEnabled != null && (
               <span className="flex items-center gap-2">
                 {p.audioEnabled && (
                   <Btn sm tone="accent" onClick={p.onAnalyzeAudio} disabled={running || p.busy || audioIncapable}>
@@ -389,26 +402,28 @@ export default function TaggingPanel(p: TaggingPanelProps) {
                 </Btn>
               </span>
             )}
-            {audioIncapable && p.audioEnabled ? (
+            {!isMA && audioIncapable && p.audioEnabled ? (
               <span className="basis-full border border-[color-mix(in_oklab,var(--accent)_35%,transparent)] bg-[var(--accent-soft)] px-3 py-2 text-[11px] leading-[1.5] text-ink !normal-case">
-                <b>Sounds-like is on, but the analysis engine can’t fingerprint audio.</b> Your
+                <b>Sounds-like is on, but the analysis engine can&apos;t fingerprint audio.</b> Your
                 tts-heavy image predates audio fingerprinting, so a run would only fill bpm/key and
                 leave this at 0. Pull the latest image and recreate the sidecar, then run the analysis:
                 <code className="mt-1 block font-mono text-[10.5px] text-muted">docker compose pull tts-heavy &amp;&amp; docker compose --profile tts-heavy up -d tts-heavy</code>
               </span>
             ) : (
               <span className="caption basis-full !tracking-[0.04em] !normal-case">
-                {analysisOff
-                  ? 'Needs the analysis engine above.'
-                  : 'Listens to each track and fingerprints how it sounds, enabling “sounds-like” picks and sonic journeys.'}
+                {isMA
+                  ? 'CLAP audio fingerprinting comes from Music Assistant — sounds-like picks are available automatically.'
+                  : analysisOff
+                    ? 'Needs the analysis engine above.'
+                    : 'Listens to each track and fingerprints how it sounds, enabling "sounds-like" picks and sonic journeys.'}
               </span>
             )}
           </div>
 
           {vocalIncapable && p.vocalEnabled ? (
             <div className="border border-[color-mix(in_oklab,var(--accent)_35%,transparent)] bg-[var(--accent-soft)] px-3 py-2 text-[11px] leading-[1.5] text-ink !normal-case">
-              <b>Vocal-activity is on, but the analysis engine can’t separate vocals.</b> Your
-              tts-heavy image predates vocal separation, so the pass skips vocal ranges (it won’t
+              <b>Vocal-activity is on, but the analysis engine can't separate vocals.</b> Your
+              tts-heavy image predates vocal separation, so the pass skips vocal ranges (it won't
               re-scan the whole library chasing them). Pull the latest image and recreate the sidecar, then run the analysis:
               <code className="mt-1 block font-mono text-[10.5px] text-muted">docker compose pull tts-heavy &amp;&amp; docker compose --profile tts-heavy up -d tts-heavy</code>
             </div>
@@ -429,12 +444,16 @@ export default function TaggingPanel(p: TaggingPanelProps) {
             </button>
           </div>
           <div className="grid gap-2.5 sm:grid-cols-2">
-            <Pass on={!!passes.reseed} onClick={() => togglePass('reseed')} name="Re-embed all tracks"
-              hint="Drop & rebuild every vector. Run after changing the embedding model." />
+            {!isMA && (
+              <Pass on={!!passes.reseed} onClick={() => togglePass('reseed')} name="Re-embed all tracks"
+                hint="Drop & rebuild every vector. Run after changing the embedding model." />
+            )}
             <Pass on={!!passes.reEnrich} onClick={() => togglePass('reEnrich')} name="Re-enrich metadata"
               hint="Re-fetch Last.fm tags + lyrics that feed the tagging." />
-            <Pass on={!!passes.reAnalyze} onClick={() => togglePass('reAnalyze')} name="Re-analyse acoustics"
-              hint="Redo BPM / key for every track — also refreshes sounds-like fingerprints when enabled." />
+            {!isMA && (
+              <Pass on={!!passes.reAnalyze} onClick={() => togglePass('reAnalyze')} name="Re-analyse acoustics"
+                hint="Redo BPM / key for every track — also refreshes sounds-like fingerprints when enabled." />
+            )}
             <Pass on={!!passes.upgrade} onClick={() => togglePass('upgrade')} name="Re-decide moods"
               hint="Re-tag tracks whose prompt or model is now stale." />
           </div>

@@ -21,13 +21,13 @@ function headers(): Record<string, string> {
   return h;
 }
 
-export async function apiGet<T = any>(path: string, params: Record<string, any> = {}): Promise<T> {
+export async function apiGet<T = any>(path: string, params: Record<string, any> = {}, timeoutMs = 10_000): Promise<T> {
   const url = new URL(`${baseUrl()}/api/v1${path}`);
   for (const [k, v] of Object.entries(params)) {
     if (v != null && v !== '') url.searchParams.set(k, String(v));
   }
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 10_000);
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const r = await fetch(url.toString(), { headers: headers(), signal: ctrl.signal });
     if (!r.ok) throw new Error(`ma-db-api ${path} → HTTP ${r.status}`);
@@ -56,7 +56,7 @@ export function toSong(t: any): any {
     favorite: t.favorite ?? false,
     // Analysis fields forwarded so queue.ts can compute loudness gain / crossfade
     loudnessLufs: t.analysis?.loudness_lufs ?? null,
-    bpm: t.analysis?.bpm ?? null,
+    bpm: t.analysis?.bpm != null ? Math.round(t.analysis.bpm * 10) / 10 : null,
     musicalKey: t.analysis?.camelot ?? null,
   };
 }
