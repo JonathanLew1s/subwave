@@ -68,6 +68,13 @@ It's *radio*, not a playlist. No per-listener shuffle, no skip button, no
 
 This is a personal fork of [perminder-klair/subwave](https://github.com/perminder-klair/subwave). It tracks upstream closely and merges each release, but carries a set of enhancements that haven't been submitted upstream. Here's what differs:
 
+| | |
+|---|---|
+| <img src="web/public/screenshots/fork-personas.webp" alt="Personas — soul editor, per-persona voice, skills and DJ mode toggles" width="100%"> | <img src="web/public/screenshots/fork-shows.webp" alt="Shows — 24×7 weekly grid with colour-coded show slots" width="100%"> |
+| **Personas** — soul text, talk frequency, script length, DJ mode, per-persona voice and skills | **Shows** — 24×7 schedule grid, on-air / up-next / after-that, show definitions |
+| <img src="web/public/screenshots/fork-show-edit.webp" alt="Edit show — name, persona, moods, theme override, topic brief, per-show exclude patterns" width="100%"> | <img src="web/public/screenshots/fork-track-filters.webp" alt="Track filters — duration cap and exclude pattern list" width="100%"> |
+| **Show editor** — topic brief fed to the DJ, per-show mood selection, theme override, and exclude-pattern override | **Track filters** — duration cap and exclude-pattern list applied before any LLM call |
+
 ### Brief-pool and show-focused picking
 
 When a scheduled show is active, the picker builds a **brief-pool**: a stratified basket of tracks pre-filtered to the show's genre, mood, and energy, drawn in popularity-weighted slices. Every LLM tool call — in both the agent and the pool picker — receives this basket as a hard constraint, so the DJ can't wander outside the show's genre even on a creative pick.
