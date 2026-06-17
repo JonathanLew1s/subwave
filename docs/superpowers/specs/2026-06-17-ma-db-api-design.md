@@ -56,6 +56,7 @@ A standalone Rust service that runs as a **sidecar container in the MA pod**, op
 | Connection pool | `deadpool-sqlite` | Async-friendly pool over rusqlite |
 | JSON | `serde` + `serde_json` | Zero-copy where possible |
 | OpenAPI | `utoipa` + `utoipa-axum` | Spec generated from route/model annotations |
+| Tag reading | `lofty` | Embedded cover art from MP3/FLAC/OGG/M4A — tag-only reads, no full decode |
 | Middleware | `tower-http` | CORS, compression, request tracing |
 | Container | Alpine / scratch | ~5–8MB final image |
 
@@ -252,9 +253,9 @@ KNN similarity search using CLAP 1024-dim vectors via `sqlite-vec`.
 
 ### `GET /api/v1/tracks/:id/cover`
 
-Serves the track's cover art image directly from MA's thumbnail cache on disk (`MA_COVER_DIR`). Returns the image binary with appropriate `Content-Type`. Returns `404` if no thumbnail exists for this track.
+Extracts the embedded cover art from the audio file itself and returns it as an image binary with appropriate `Content-Type`. Returns `404` if the track has no embedded art.
 
-**Implementation note:** MA's exact thumbnail naming convention (hash algorithm, path structure within `.storage/thumbnails/`) must be verified by inspecting the live data directory before implementing this route. The `MA_COVER_DIR` env var lets operators point to the right location if MA's internal layout changes between versions.
+The bridge resolves the file path as `{MA_MUSIC_ROOT}/{file_path}` and reads only the tag portion of the file using `lofty` (a Rust audio tag library that supports MP3/FLAC/OGG/M4A/WAV/AIFF without reading the full audio data). Cover images are cached in an in-process LRU cache keyed by track ID to avoid repeated file reads for the same artwork.
 
 ---
 
@@ -390,7 +391,7 @@ music-assistant-db-api/
 | Var | Required | Default | Description |
 |---|---|---|---|
 | `MA_DB_PATH` | yes | — | Absolute path to MA's `library.db` |
-| `MA_COVER_DIR` | no | `<MA_DB_PATH dir>/.storage/thumbnails` | MA thumbnail cache directory |
+| `MA_MUSIC_ROOT` | yes | — | Absolute path to music library root (for cover art extraction) |
 | `PORT` | no | `8097` | HTTP listen port |
 | `MA_BRIDGE_API_KEY` | no | — | If set, require `Authorization: Bearer <key>` |
 | `LOG_LEVEL` | no | `info` | `trace`, `debug`, `info`, `warn`, `error` |
@@ -415,6 +416,8 @@ spec:
           env:
             - name: MA_DB_PATH
               value: /data/library.db
+            - name: MA_MUSIC_ROOT
+              value: /music
             - name: PORT
               value: "8097"
           ports:
@@ -442,9 +445,11 @@ services:
     image: ghcr.io/jonathanlew1s/music-assistant-db-api:latest
     environment:
       MA_DB_PATH: /data/library.db
+      MA_MUSIC_ROOT: /music
       MA_BRIDGE_API_KEY: ${MA_BRIDGE_API_KEY:-}
     volumes:
       - ma-data:/data:ro
+      - music:/music:ro
     ports:
       - "8097:8097"
     depends_on:
