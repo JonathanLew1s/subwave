@@ -23,7 +23,7 @@ import fs from 'node:fs';
 import process from 'node:process';
 
 import { STATE_DIR } from '../src/config.js';
-import { open as openDb, upsertFromMASync, pruneMissingTracks, AUDIO_EMBEDDING_DIM } from '../src/music/library-db.js';
+import { open as openDb, upsertFromMASync, upsertTrackAudioVector, dropAudioVectors, pruneMissingTracks, AUDIO_EMBEDDING_DIM } from '../src/music/library-db.js';
 
 // ---------------------------------------------------------------------------
 // Args
@@ -172,6 +172,13 @@ const INCREMENTAL_QUERY = SYNC_QUERY.replace(
 async function main() {
   await openDb({ embeddingDim: AUDIO_EMBEDDING_DIM, adoptStoredDim: true, reseed: flags.reseed });
 
+  // On reseed, drop+recreate track_audio_vectors at the current AUDIO_EMBEDDING_DIM
+  // so stale 512-dim rows don't reject the 1024-dim MA CLAP vectors.
+  if (flags.reseed) {
+    dropAudioVectors();
+    console.log(`[sync-ma] reseed: track_audio_vectors recreated at dim=${AUDIO_EMBEDDING_DIM}`);
+  }
+
   const lastSyncAt: number = flags.full ? 0 : (settings.sync?.maLastSyncAt ?? 0);
   const isIncremental = !flags.full && lastSyncAt > 0;
 
@@ -199,6 +206,7 @@ async function main() {
   const liveIds = new Set<string>();
   let synced = 0;
   let withAnalysis = 0;
+  let withClap = 0;
   let withPopularity = 0;
 
   for (const row of rowIter) {
@@ -257,6 +265,18 @@ async function main() {
       popularityAlbum: pop.album,
     });
 
+    // CLAP embedding — 1024-dim float[] from sonic_analysis.extra_data.clap_embedding
+    const clapRaw: number[] | null = sonic?.extra_data?.clap_embedding ?? null;
+    if (clapRaw && Array.isArray(clapRaw) && clapRaw.length === AUDIO_EMBEDDING_DIM) {
+      try {
+        upsertTrackAudioVector(id, clapRaw);
+        withClap++;
+      } catch (err) {
+        // Dim mismatch on the table — operator needs --reseed
+        if (synced === 0) console.warn(`[sync-ma] CLAP insert failed (run --reseed?): ${err}`);
+      }
+    }
+
     if (loud || fades || sonic) withAnalysis++;
     synced++;
     if (synced % 500 === 0) console.log(`[sync-ma] synced ${synced}/${totalCount}...`);
@@ -285,7 +305,7 @@ async function main() {
   };
   fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2));
 
-  console.log(`[sync-ma] done: ${synced} synced, ${withAnalysis} with acoustic data, ${withPopularity} with popularity`);
+  console.log(`[sync-ma] done: ${synced} synced, ${withAnalysis} with acoustic data, ${withClap} with CLAP, ${withPopularity} with popularity`);
 }
 
 main().catch(e => { console.error('[sync-ma]', e); process.exit(1); });

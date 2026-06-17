@@ -42,7 +42,10 @@ export const ANALYSIS_VERSION = 6;
 // is 512-d), so — unlike the text index in track_vectors — there's no per-model
 // dim negotiation. Audio vectors are a DIFFERENT space (waveform-derived, not
 // metadata/lyric-derived) and live in their own vec0 table.
-export const AUDIO_EMBEDDING_DIM = 512;
+// MA's sonic_analysis CLAP embeddings are 1024-dim. Navidrome-path installs
+// that ran `npm run analyze` at 512-dim will need `npm run analyze -- --reseed`
+// (or `npm run sync-ma -- --reseed` on the MA path) to rebuild track_audio_vectors.
+export const AUDIO_EMBEDDING_DIM = 1024;
 
 // Audio-embedding model+method version. Independent of ANALYSIS_VERSION
 // (bpm/key/intro) so a CLAP model swap can re-target audio vectors without
