@@ -28,7 +28,7 @@ A standalone Rust service that runs as a **sidecar container in the MA pod**, op
 - Full audio analysis exposure: CLAP 1024-dim, BPM, key/mode/Camelot, beats, LUFS, valence/energy/danceability/arousal/acousticness/instrumentalness
 - Runtime query capability (filter, sort, similarity) — not just bulk export
 - KNN similarity search via CLAP vectors built into the bridge
-- Cover art served directly from MA's thumbnail cache on disk
+- Cover art extracted from embedded tags in the audio file via `lofty`
 - Optional API key auth (`MA_BRIDGE_API_KEY` env var)
 - OpenAPI spec generated from code via `utoipa`
 - Single static binary; scratch/Alpine image ~5–8MB
@@ -69,11 +69,10 @@ k8s Pod: music-assistant
 ┌─────────────────────────────────────────────────────┐
 │  container: music-assistant                         │
 │    writes → /data/library.db (WAL mode)             │
-│    writes → /data/.storage/thumbnails/              │
 │                                                     │
 │  container: ma-db-api                               │
 │    reads  → /data/library.db (read-only, WAL)       │
-│    reads  → /data/.storage/thumbnails/              │
+│    reads  → /music/{file_path} (cover art via lofty)│
 │    serves → :8097                                   │
 └─────────────────────────────────────────────────────┘
           │
@@ -363,7 +362,7 @@ music-assistant-db-api/
 ├── openapi.yaml              — generated, committed
 ├── src/
 │   ├── main.rs               — startup, config from env, axum router assembly
-│   ├── config.rs             — Config struct: MA_DB_PATH, MA_COVER_DIR, PORT, MA_BRIDGE_API_KEY
+│   ├── config.rs             — Config struct: MA_DB_PATH, MA_MUSIC_ROOT, PORT, MA_BRIDGE_API_KEY
 │   ├── db/
 │   │   ├── mod.rs            — deadpool-sqlite pool init, WAL mode setup, sqlite-vec load
 │   │   ├── queries.rs        — all SQL: track join, filters, similarity, search
