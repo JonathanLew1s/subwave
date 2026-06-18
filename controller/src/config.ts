@@ -58,7 +58,7 @@ export const config = {
   // MA_MUSIC_ROOT: absolute path to the music root inside this container —
   //   used to build file:// URIs for Liquidsoap (shared volume with MA).
   maDbApi: {
-    url: process.env.MA_DB_API_URL || 'http://music-assistant:8096',
+    url: process.env.MA_DB_API_URL || '',
     apiKey: process.env.MA_DB_API_KEY || '',
     musicRoot: process.env.MA_MUSIC_ROOT || '',
   },

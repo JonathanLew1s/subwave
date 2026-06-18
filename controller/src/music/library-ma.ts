@@ -270,30 +270,16 @@ function shapeObservatoryTrack(t: any): any {
 }
 
 // Observatory data — returns all analysed tracks shaped for the constellation view.
-// Paginates /tracks?include=analysis&energy_min=0 to fetch only sonic-analysed
-// tracks (~7K rows). Stops early once `max` is reached.
+// Uses the dedicated /tracks/observatory endpoint which is server-side cached
+// and drives the JOIN from audio_analysis (~7K rows) rather than all tracks (37K+).
 export async function tracksForObservatory(max: number): Promise<any[]> {
-  const PAGE = 500;
-  const out: any[] = [];
-  let offset = 0;
-  while (out.length < max) {
-    try {
-      const data = await apiGet('/tracks', {
-        include: 'analysis',
-        energy_min: 0,
-        limit: Math.min(PAGE, max - out.length),
-        offset,
-      }, 30_000);
-      const items: any[] = data.items ?? [];
-      if (items.length === 0) break;
-      for (const t of items) out.push(shapeObservatoryTrack(t));
-      if (out.length >= (data.total ?? 0) || items.length < PAGE) break;
-      offset += items.length;
-    } catch {
-      break;
-    }
+  try {
+    const data = await apiGet<{ total: number; items: any[] }>('/tracks/observatory', {}, 30_000);
+    const items: any[] = data.items ?? [];
+    return items.slice(0, max).map(shapeObservatoryTrack);
+  } catch {
+    return [];
   }
-  return out;
 }
 
 // coverage endpoint shape

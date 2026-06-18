@@ -12,7 +12,7 @@ import { config } from '../config.js';
 // ---------------------------------------------------------------------------
 
 function baseUrl(): string {
-  return (config.maDbApi.url || 'http://music-assistant:8096').replace(/\/$/, '');
+  return (config.maDbApi.url || '').replace(/\/$/, '');
 }
 
 function headers(): Record<string, string> {
