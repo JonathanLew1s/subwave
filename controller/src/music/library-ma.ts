@@ -138,7 +138,7 @@ export function stats() {
 export async function songsByMood(mood: string | null | undefined): Promise<any[]> {
   if (!mood) return [];
   const [energyMin, energyMax] = MOOD_ENERGY[mood] ?? [null, null];
-  const params: Record<string, any> = { limit: 60, order: 'random' };
+  const params: Record<string, any> = { limit: 200, order: 'random' };
   if (energyMin != null) params.energy_min = energyMin;
   if (energyMax != null) params.energy_max = energyMax;
   try {

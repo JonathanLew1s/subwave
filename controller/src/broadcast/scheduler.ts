@@ -39,43 +39,50 @@ export async function refreshAutoPlaylist() {
 async function refreshAutoPlaylistInner() {
   const ctx = await getFullContext();
 
-  // Auto-playlist is Liquidsoap's fallback source — it plays directly from
-  // this file (no picker/LLM in the loop) whenever the queue runs dry, so it
-  // must honour the same exclude patterns / duration cap as every other pick
-  // path. Without this, station-wide excludes (e.g. "demo", "live", holiday
-  // tracks) only applied to LLM-driven picks and a previously-built auto.m3u
-  // could keep airing excluded tracks indefinitely on underrun.
   const activeShow = settings.resolveActiveShow();
   const { maxDurationSec, excludePatterns } = settings.getPickerConfig(activeShow);
 
-  // Same candidate sources + weights as the live LLM picker
-  // (music/picker.ts buildCandidates), just a deeper pool (TARGET_POOL vs.
-  // CANDIDATE_CAP) since this fills an hour-long fallback playlist rather than
-  // a single pick. Show mood takes precedence; when no show is scheduled, the
-  // ambient context mood (time/weather/festival) drives mood-library selection
-  // so the fallback playlist tracks the current vibe rather than a flat shuffle.
-  const showMood = activeShow?.moods?.[0] || ctx.dominantMood || null;
-  const preferPopularity = !showMood;
+  const showMoods: string[] = activeShow?.moods?.length
+    ? activeShow.moods
+    : (ctx.dominantMood ? [ctx.dominantMood] : []);
+  const showMood = showMoods[0] || null;
+  const preferPopularity = showMoods.length === 0;
 
   await library.load();
   const windows = recencyWindowsForLibrary(library.stats().distinctArtists);
   const recentIds = queue.recentlyPlayedIds(windows.trackHours);
   const recentArtists = queue.recentArtistsSince(windows.artistHours);
   const justPlayedArtists = queue.justPlayedArtistKeys();
-  const currentTrack = queue.current?.track || queue.history[0]?.track || null;
 
-  const { candidates: rawCandidates, sources } = await picker.buildCandidates(
-    showMood, recentIds, recentArtists, currentTrack, null, justPlayedArtists, TARGET_POOL, preferPopularity,
-  );
+  let rawCandidates: any[];
+  let sources: Record<string, number>;
+
+  if (config.libraryBackend === 'ma-api' && showMoods.length > 0) {
+    // MA mode: build the pool directly from all show moods + random diversity.
+    // buildCandidates is designed for single-pick (recent/frequent albums, LastFM
+    // artist graph) — none of those are mood-aligned. For the fallback playlist
+    // we want the full mood-appropriate slice of the library.
+    const [moodTracks, randomTracks] = await Promise.all([
+      library.songsByMoods(showMoods),   // all show moods, energy-band filtered
+      subsonic.getRandomSongs({ size: 50 }), // diversity buffer
+    ]);
+    const moodPool = moodTracks.map((t: any) => ({ ...t, _source: 'mood-library' }));
+    const randPool = randomTracks.map((t: any) => ({ ...t, _source: 'random' }));
+    rawCandidates = [...moodPool, ...randPool];
+    sources = { 'mood-library': moodPool.length, random: randPool.length };
+  } else {
+    const currentTrack = queue.current?.track || queue.history[0]?.track || null;
+    const result = await picker.buildCandidates(
+      showMood, recentIds, recentArtists, currentTrack, null, justPlayedArtists, TARGET_POOL, preferPopularity,
+    );
+    rawCandidates = result.candidates;
+    sources = result.sources;
+  }
 
   const filtered = rawCandidates.filter((c: any) =>
     (!c.duration || c.duration <= maxDurationSec) && isRadioPickable(c.title ?? '', c.album, excludePatterns, c.genre));
   const candidates = filtered.length > 0 ? filtered : rawCandidates;
 
-  // Sequence the final playlist using the same recency rules as the live
-  // picker — no two adjacent tracks share an artist, seeded from whatever the
-  // live queue just played so the auto-playlist's first track doesn't repeat
-  // it either.
   const poolArray = pool.buildSequencedPlaylist(candidates, TARGET_POOL, {
     justPlayedArtists,
     recentArtists,
@@ -90,7 +97,7 @@ async function refreshAutoPlaylistInner() {
     `Auto-playlist refreshed: ${poolArray.length} tracks (` +
     Object.entries(fromSource).filter(([, v]) => v > 0).map(([k, v]) => `${k}=${v}`).join(' ') +
     ` of ${Object.entries(sources).map(([k, v]) => `${k}=${v}`).join(' ')}` +
-    `, mood=${showMood || `none/popularity (${ctx.dominantMood || 'n/a'})`})`);
+    `, moods=${showMoods.join('+') || `none/popularity (${ctx.dominantMood || 'n/a'})`})`);
 }
 
 // ---------------------------------------------------------------------------
