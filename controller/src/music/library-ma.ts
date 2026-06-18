@@ -142,7 +142,7 @@ export async function songsByMood(mood: string | null | undefined): Promise<any[
   if (energyMin != null) params.energy_min = energyMin;
   if (energyMax != null) params.energy_max = energyMax;
   try {
-    const data = await apiGet('/tracks', params);
+    const data = await apiGet('/tracks', params, 30_000);
     return (data.items ?? data.tracks ?? []).map(toLibraryTrack);
   } catch {
     return [];
@@ -169,7 +169,7 @@ export async function songsByEnergy(energy: string | null | undefined): Promise<
   else if (energy === 'high') params.energy_min = 0.22;
   else return [];
   try {
-    const data = await apiGet('/tracks', params);
+    const data = await apiGet('/tracks', params, 30_000);
     return (data.items ?? data.tracks ?? []).map(toLibraryTrack);
   } catch {
     return [];
