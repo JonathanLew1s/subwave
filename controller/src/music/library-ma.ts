@@ -114,10 +114,13 @@ export async function load(): Promise<void> {
 }
 
 export function stats() {
+  // byMood: the MOOD_ENERGY keys are the moods MA can serve via energy-band
+  // filtering — this gives the UI an accurate "N moods in use" count.
+  const byMood = Object.fromEntries(Object.keys(MOOD_ENERGY).map(k => [k, 1]));
   return {
     total: _stats.total,
     distinctArtists: _stats.distinctArtists,
-    byMood: {},
+    byMood,
     byEnergy: {},
     byGenre: _stats.byGenre,
     bySource: { 'ma-api': _stats.total },

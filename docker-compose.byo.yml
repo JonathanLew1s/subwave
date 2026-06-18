@@ -52,6 +52,8 @@ services:
     volumes:
       - *state-mount
       - ${STATE_DIR:-./state}/logs:/var/log/liquidsoap
+      # Music library mount — required when using LIBRARY_BACKEND=ma-api.
+      # - ${MUSIC_DIR}:/music:ro
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:7702/status-json.xsl > /dev/null"]
       interval: 5s
@@ -80,6 +82,14 @@ services:
       # Optional sidecar for Chatterbox + PocketTTS. Gated by --profile tts-heavy
       # below; unreachable URL → fall back to Piper (no harm done).
       - TTS_HEAVY_URL=${TTS_HEAVY_URL:-http://tts-heavy:8080}
+      # ---- Music Assistant backend (optional) --------------------------------
+      # Leave these unset to control the library backend via the admin Settings
+      # UI (recommended). Set them here only to lock the backend at the
+      # deployment level — env vars always win over the UI.
+      # - LIBRARY_BACKEND=${LIBRARY_BACKEND:-}
+      - MA_DB_API_URL=${MA_DB_API_URL:-}
+      # - MA_MUSIC_ROOT=${MA_MUSIC_ROOT:-}
+      # ------------------------------------------------------------------------
     env_file:
       - ./.env
     extra_hosts:
@@ -88,6 +98,10 @@ services:
       - "${CONTROLLER_PORT:-7701}:7701"
     volumes:
       - *state-mount
+      # Music library mount — required when using LIBRARY_BACKEND=ma-api.
+      # Set MUSIC_DIR in your .env and uncomment. Both controller and broadcast
+      # must mount the library at the same container path (/music).
+      # - ${MUSIC_DIR}:/music:ro
 
   # -------------------------------------------------------------------------
   # WEB — Next.js listener UI, bound to host for your reverse proxy

@@ -49,6 +49,8 @@ services:
       - ./sounds:/sounds:ro
       - *state-mount
       - ./state/logs:/var/log/liquidsoap
+      # Music library mount — required when using LIBRARY_BACKEND=ma-api.
+      # - ${MUSIC_DIR}:/music:ro
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:7702/status-json.xsl > /dev/null"]
       interval: 5s
@@ -78,6 +80,13 @@ services:
       # below; unreachable URL → fall back to Piper. Dev usage:
       #   docker compose -f docker-compose.dev.yml --profile tts-heavy up -d
       - TTS_HEAVY_URL=${TTS_HEAVY_URL:-http://tts-heavy:8080}
+      # ---- Music Assistant backend (optional) --------------------------------
+      # Leave unset to control the backend via the admin Settings UI.
+      # Set LIBRARY_BACKEND here only to lock it at the deployment level.
+      # - LIBRARY_BACKEND=${LIBRARY_BACKEND:-}
+      - MA_DB_API_URL=${MA_DB_API_URL:-}
+      # - MA_MUSIC_ROOT=${MA_MUSIC_ROOT:-}
+      # ------------------------------------------------------------------------
     ports:
       - "7701:7701"
     env_file:
@@ -102,6 +111,10 @@ services:
       # /app/node_modules with the (possibly empty) host node_modules.
       - ./controller/src:/app/src
       - ./controller/scripts:/app/scripts
+      # Music library mount — required when using LIBRARY_BACKEND=ma-api.
+      # Set MUSIC_DIR in your .env and uncomment. Dev: point at your local music
+      # library. Both controller and broadcast must mount at the same path.
+      # - ${MUSIC_DIR}:/music:ro
 
   # -------------------------------------------------------------------------
   # TTS-HEAVY (optional) — sidecar for Chatterbox + PocketTTS

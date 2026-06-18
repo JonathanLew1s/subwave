@@ -77,6 +77,9 @@ router.get('/settings', requireAdmin, async (req, res) => {
       },
       // Current effective backend (may differ from settings if env var is set).
       effectiveLibraryBackend: config.libraryBackend,
+      // True when LIBRARY_BACKEND env var is set — tells the UI to show the
+      // "locked by env" notice and disable the backend selector.
+      libraryBackendFromEnv: !!process.env.LIBRARY_BACKEND,
       defaults: {
         // The built-in prompt template — the UI shows this when djPrompt is "".
         djPrompt: settings.DEFAULT_DJ_PROMPT_TEMPLATE,

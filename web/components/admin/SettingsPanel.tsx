@@ -2316,7 +2316,7 @@ function LibraryBackendSection({ data, form, setForm, busy, saveSettings }: Libr
   const saved = data?.values?.library ?? {};
   const effective = data?.effectiveLibraryBackend ?? saved.backend ?? 'navidrome';
   const isMA = form.library.backend === 'ma-api';
-  const envOverride = !!data?.effectiveLibraryBackend && data.effectiveLibraryBackend !== saved.backend;
+  const envOverride = !!(data as any)?.libraryBackendFromEnv;
 
   const libDirty =
     form.library.backend !== (saved.backend ?? 'navidrome') ||
@@ -2342,20 +2342,21 @@ function LibraryBackendSection({ data, form, setForm, busy, saveSettings }: Libr
         <div className="mb-4 flex items-start gap-2.5 border border-[var(--accent)] bg-[var(--ink-softer)] p-3">
           <span className="mt-1 size-1.5 flex-none rounded-full bg-vermilion" />
           <div className="text-[11px] leading-[1.5] text-muted">
-            <span className="font-bold tracking-[0.1em] text-[var(--fg)] uppercase">Env override active</span>{' '}—{' '}
-            <code>LIBRARY_BACKEND={effective}</code> is set in the environment and overrides this setting.
-            Unset the env var to let this UI control the backend.
+            <span className="font-bold tracking-[0.1em] text-[var(--fg)] uppercase">Locked by env</span>{' '}—{' '}
+            <code>LIBRARY_BACKEND={effective}</code> is set in the environment. The selector below is read-only.
+            Remove <code>LIBRARY_BACKEND</code> from your <code>.env</code> (or deployment manifest) and restart
+            the controller to let this UI control the backend.
           </div>
         </div>
       )}
 
       <Card title="Backend" sub="which system supplies track discovery and URIs">
         <div className="grid gap-5">
-          <div className="field">
+          <div className={cn('field', envOverride && 'pointer-events-none opacity-50')}>
             <Label>Active backend</Label>
             <Seg
-              value={form.library.backend}
-              onChange={v => setForm(f => ({ ...f, library: { ...f.library, backend: v as 'navidrome' | 'ma-api' } }))}
+              value={envOverride ? effective : form.library.backend}
+              onChange={v => !envOverride && setForm(f => ({ ...f, library: { ...f.library, backend: v as 'navidrome' | 'ma-api' } }))}
               options={[
                 { id: 'navidrome', label: 'Navidrome' },
                 { id: 'ma-api', label: 'MA DB API' },
@@ -2415,9 +2416,11 @@ function LibraryBackendSection({ data, form, setForm, busy, saveSettings }: Libr
         </div>
 
         <SaveBar
-          note={libDirty
-            ? 'Unsaved changes. Requires a controller restart to take effect.'
-            : 'Saved. Restart the controller for backend changes to take effect.'}
+          note={envOverride
+            ? 'Backend selector is locked by the LIBRARY_BACKEND env var. MA DB API URL, key, and root path can still be saved.'
+            : libDirty
+              ? 'Unsaved changes. Requires a controller restart to take effect.'
+              : 'Saved. Restart the controller for backend changes to take effect.'}
           busy={busy}
           onSave={() => saveSettings({ library: form.library })}
           saveLabel="Save backend"
