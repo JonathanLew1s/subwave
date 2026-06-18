@@ -54,6 +54,7 @@ function toLibraryTrack(t: any): any {
     album: s.album,
     year: s.year,
     genre: s.genre,
+    path: s.path,         // relative file path — required by getAnnotatedUri for file:// URIs
     moods: [],            // MA has no LLM mood tags
     energy: t.analysis?.energy != null ? energyLabel(t.analysis.energy) : null,
     popularitySong: null,
