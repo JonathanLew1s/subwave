@@ -160,6 +160,7 @@ export async function songsByMood(mood: string | null | undefined): Promise<any[
     // rows (path=null) are useless for URI construction and must not satisfy the
     // MOOD_MIN_EXACT threshold — otherwise they fill auto.m3u with blank URIs.
     const exact = config.libraryBackend === 'ma-api' ? allExact.filter(t => t.path) : allExact;
+    console.log(`[library:songsByMood] mood=${mood} allExact=${allExact.length} exact(with-path)=${exact.length} backend=${config.libraryBackend}`);
     if (exact.length >= MOOD_MIN_EXACT) return exact;
 
     const seen = new Set(exact.map(s => s.id));
@@ -173,13 +174,19 @@ export async function songsByMood(mood: string | null | undefined): Promise<any[
         seen.add(row.id);
       }
     }
+    console.log(`[library:songsByMood] mood=${mood} widened=${widened.length} MOOD_MIN_EXACT=${MOOD_MIN_EXACT}`);
     // Non-MA: always return what the DB has (even if short — no fallback).
     // MA mode: only return DB results when the tagger has built a useful corpus;
     // fall through to the MA energy filter when still too sparse.
     if (config.libraryBackend !== 'ma-api' || widened.length >= MOOD_MIN_EXACT) return widened;
   }
 
-  if (config.libraryBackend === 'ma-api') return _ma.songsByMood(mood);
+  if (config.libraryBackend === 'ma-api') {
+    console.log(`[library:songsByMood] mood=${mood} falling through to _ma.songsByMood`);
+    const result = await _ma.songsByMood(mood);
+    console.log(`[library:songsByMood] mood=${mood} _ma returned ${result.length} tracks`);
+    return result;
+  }
   return [];
 }
 
