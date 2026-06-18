@@ -80,6 +80,7 @@ interface UntaggedResponse { rows: Track[]; nextCursor: string | null }
 interface SettingsResponse {
   tagger?: TaggerState;
   libraryStats?: LibraryStatsLite;
+  effectiveLibraryBackend?: 'navidrome' | 'ma-api';
   // Only the slice this panel needs from the full settings payload.
   values?: { audio?: { embeddings?: boolean; vocalActivity?: boolean } };
 }
@@ -143,6 +144,8 @@ export default function LibraryPanel() {
   const [audioEnabled, setAudioEnabled] = useState<boolean | null>(null);
   // settings.audio.vocalActivity — null until the first /settings poll lands.
   const [vocalEnabled, setVocalEnabled] = useState<boolean | null>(null);
+  // Whether the MA backend is active — tagging and text embeddings don't apply.
+  const [isMABackend, setIsMABackend] = useState(false);
   const [logOpen, setLogOpen] = useState(false);
   const [queuing, setQueuing] = useState<string | null>(null);
   const [retagging, setRetagging] = useState<string | null>(null);
@@ -204,6 +207,7 @@ export default function LibraryPanel() {
       const j = (await r.json()) as SettingsResponse;
       setTagger(j.tagger || null);
       if (j.libraryStats) setLibStats(j.libraryStats);
+      if (j.effectiveLibraryBackend) setIsMABackend(j.effectiveLibraryBackend === 'ma-api');
       if (j.values?.audio) {
         setAudioEnabled(!!j.values.audio.embeddings);
         setVocalEnabled(!!j.values.audio.vocalActivity);
@@ -645,6 +649,7 @@ export default function LibraryPanel() {
         onToggleAudio={toggleAudio}
         onAnalyzeAudio={analyzeAudio}
         vocalEnabled={vocalEnabled}
+        isMABackend={isMABackend}
       />
 
       <Tabs tab={tab} setTab={setTab} counts={counts} />

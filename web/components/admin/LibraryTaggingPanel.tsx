@@ -116,6 +116,9 @@ interface TaggingPanelProps {
   // settings poll lands. Drives the "build WITH_DEMUCS=1" warning when on but
   // the backend can't produce vocal ranges.
   vocalEnabled: boolean | null;
+  // When true (MA backend active), tagging and text-embedding controls are
+  // suppressed — MA manages track metadata; the tagger is not used.
+  isMABackend?: boolean;
 }
 
 // One friendly sentence per pipeline phase — shown under the live progress so
@@ -168,7 +171,9 @@ export default function TaggingPanel(p: TaggingPanelProps) {
   const anySel = !!(passes.reseed || passes.reEnrich || passes.reAnalyze || passes.upgrade);
 
   // Embeddings present but no vectors → likely a model swap dropped them.
-  const embeddingMissing = (tagged ?? 0) > 0 && p.libStats != null && p.libStats.withEmbedding === 0;
+  // Suppressed in MA mode: MA has its own CLAP vectors; the controller's text
+  // embedding model is not used for MA-backend track discovery.
+  const embeddingMissing = !p.isMABackend && (tagged ?? 0) > 0 && p.libStats != null && p.libStats.withEmbedding === 0;
 
   // Structured live-run progress from the tagger child — survives page
   // reloads and runs started elsewhere (no client-captured baseline). Null
@@ -256,6 +261,17 @@ export default function TaggingPanel(p: TaggingPanelProps) {
 
       {/* action zone — idle vs running */}
       {!running ? (
+        p.isMABackend ? (
+          <div className="flex items-start gap-2.5 p-6">
+            <div className="text-[13px] text-muted">
+              Tagging is not used with the MA backend. Music Assistant manages track
+              metadata and energy analysis — the DJ selects tracks based on MA&apos;s
+              audio features. Switch to Navidrome in{' '}
+              <a href="/admin/settings#library-backend" className="font-bold text-ink underline-offset-2 hover:underline">Settings → Library backend</a>{' '}
+              to use mood tagging.
+            </div>
+          </div>
+        ) : (
         <div className="flex flex-wrap items-center gap-4 p-6">
           <div className="min-w-[220px] flex-1 text-[13px]">
             {remaining != null && remaining > 0
@@ -278,6 +294,7 @@ export default function TaggingPanel(p: TaggingPanelProps) {
             </Btn>
           </div>
         </div>
+        )
       ) : (
         <div className="flex flex-col gap-3 p-6">
           <div className="flex flex-wrap items-center justify-between gap-3.5">
@@ -324,8 +341,9 @@ export default function TaggingPanel(p: TaggingPanelProps) {
         </div>
       )}
 
-      {/* footer — progressive disclosure */}
+      {/* footer — progressive disclosure (hidden in MA mode — re-scan/re-embed not applicable) */}
       <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-dashed border-separator-strong px-6 py-3">
+        {!p.isMABackend && (
         <button
           type="button"
           className={cn('inline-flex items-center gap-1.5 text-[11px] font-bold', maintOpen ? 'text-ink' : 'text-muted hover:text-ink')}
@@ -333,6 +351,7 @@ export default function TaggingPanel(p: TaggingPanelProps) {
         >
           {maintOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />} Maintenance &amp; advanced
         </button>
+        )}
         <button
           type="button"
           className={cn('inline-flex items-center gap-1.5 text-[11px] font-bold', p.logOpen ? 'text-ink' : 'text-muted hover:text-ink')}
@@ -342,8 +361,8 @@ export default function TaggingPanel(p: TaggingPanelProps) {
         </button>
       </div>
 
-      {/* maintenance & advanced disclosure */}
-      {maintOpen && (
+      {/* maintenance & advanced disclosure — hidden in MA mode */}
+      {!p.isMABackend && maintOpen && (
         <div className="flex flex-col gap-3.5 border-t border-ink bg-[var(--ink-soft)] p-6">
           {/* optional acoustic / audio-fingerprint passes — tucked away here so
               the default view stays focused on mood & energy */}

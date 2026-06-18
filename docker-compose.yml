@@ -68,6 +68,10 @@ services:
     volumes:
       - *state-mount
       - ${STATE_DIR:-./state}/logs:/var/log/liquidsoap
+      # Music library mount — required when using LIBRARY_BACKEND=ma-api.
+      # Liquidsoap resolves the file:// URIs the controller writes; both must
+      # see the library at the same container path. See controller comment above.
+      # - ${MUSIC_DIR}:/music:ro
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:7702/status-json.xsl > /dev/null"]
       interval: 5s
@@ -105,6 +109,23 @@ services:
       # unreachable and audio/chatterbox.ts + audio/pocketTts.ts silently
       # fall back to Piper (same behaviour as the default image today).
       - TTS_HEAVY_URL=${TTS_HEAVY_URL:-http://tts-heavy:8080}
+      # ---- Music Assistant backend (optional) --------------------------------
+      # Leave these unset to control the library backend via the admin Settings
+      # UI (recommended). Set them here only to lock the backend at the
+      # deployment level — env vars always win over the UI.
+      #
+      # LIBRARY_BACKEND: navidrome (default) | ma-api
+      # Uncomment to lock backend; omit to let the Settings UI control it.
+      # - LIBRARY_BACKEND=${LIBRARY_BACKEND:-}
+      #
+      # MA_DB_API_URL: URL of the music-assistant-db-api sidecar.
+      # Can also be set via the admin Settings UI.
+      - MA_DB_API_URL=${MA_DB_API_URL:-}
+      # MA_MUSIC_ROOT: absolute path where the music library is mounted inside
+      # the controller container. Must match the broadcast mount below.
+      # Can also be set via the admin Settings UI (recommended).
+      # - MA_MUSIC_ROOT=${MA_MUSIC_ROOT:-}
+      # ------------------------------------------------------------------------
     env_file:
       # All controller config (Navidrome creds, LLM keys, ADMIN_*, etc.) lives
       # in the root .env. Vars not set are simply absent — settings.json takes
@@ -114,6 +135,11 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - *state-mount
+      # Music library mount — required when using LIBRARY_BACKEND=ma-api.
+      # Set MUSIC_DIR in your .env to the absolute host path of your music
+      # library and uncomment the line below. Both controller and broadcast
+      # must mount the library at the same container path (/music).
+      # - ${MUSIC_DIR}:/music:ro
 
   # -------------------------------------------------------------------------
   # WEB — Next.js listener UI
