@@ -216,7 +216,7 @@ router.get('/library/observatory/track/:id', requireAdmin, async (req, res) => {
     // MA backend: tracks live in the sidecar, not the local DB.
     if (config.libraryBackend === 'ma-api') {
       try {
-        const t = await maDbApi.apiGet(`/tracks/${id}`, { include_clap: 'true', include_analysis: 'true' });
+        const t = await maDbApi.apiGet(`/tracks/${id}`, { include: 'analysis' });
         const clap: number[] | null = t.analysis?.clap_embedding ?? null;
         const instrm: number | null = t.analysis?.instrumentalness ?? null;
         const energy: number | null = t.analysis?.energy ?? null;
