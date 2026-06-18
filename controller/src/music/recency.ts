@@ -114,12 +114,20 @@ export function filterPickerCandidates<T extends CandidateLike>(
   // available so a same-artist candidate shouldn't be reintroduced.
   const modes = relaxArtists ? allModes : allModes.filter((m) => m.recentArtists);
 
+  // Accumulate candidates across all modes — freshest first (mode 1), then
+  // progressively relaxed to fill the pool to `cap`. Modes are additive: each
+  // subsequent mode only contributes tracks not already admitted by earlier
+  // modes. This ensures the pool is full enough for the auto-playlist while
+  // still preferring the freshest tracks.
+  const out: T[] = [];
+  const nextSeen = new Set(seenIds);
+  const nextArtistCounts = new Map(artistCounts);
+
   for (const mode of modes) {
-    const nextSeen = new Set(seenIds);
-    const nextArtistCounts = new Map(artistCounts);
-    const out: T[] = [];
+    if (out.length >= cap) break;
 
     for (const song of candidates) {
+      if (out.length >= cap) break;
       if (!song?.id || nextSeen.has(song.id)) continue;
       if (mode.recentTracks && recentIds.has(song.id)) continue;
       if (mode.recentTracks && recentKeys.has(trackKey(song))) continue;
@@ -139,16 +147,13 @@ export function filterPickerCandidates<T extends CandidateLike>(
 
       nextSeen.add(song.id);
       out.push(song);
-      if (out.length >= cap) break;
     }
+  }
 
-    if (out.length === 0) continue;
-
+  if (out.length > 0) {
     for (const id of nextSeen) seenIds.add(id);
     artistCounts.clear();
     for (const [key, count] of nextArtistCounts) artistCounts.set(key, count);
-    return out;
   }
-
-  return [];
+  return out;
 }

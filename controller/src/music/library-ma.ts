@@ -101,11 +101,15 @@ function energyLabel(e: number): string {
 
 export async function load(): Promise<void> {
   try {
-    const h = await apiGet('/health/detailed');
+    const [h, a] = await Promise.all([
+      apiGet('/health/detailed'),
+      apiGet('/artists', { limit: 1 }),
+    ]);
     // health/detailed returns { track_count, analysis_coverage: { bpm, clap, sonic, loudness } }
+    // /artists?limit=1 returns { total } — the full artist count for recency-window scaling.
     _stats = {
       total: h.track_count ?? h.total_tracks ?? h.total ?? 0,
-      distinctArtists: h.total_artists ?? 0,
+      distinctArtists: h.total_artists ?? a.total ?? 0,
       byGenre: h.genres ?? {},
       updatedAt: new Date().toISOString(),
     };
