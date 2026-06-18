@@ -280,6 +280,7 @@ export async function tracksForObservatory(max: number): Promise<any[]> {
     try {
       const data = await apiGet('/tracks', {
         include: 'analysis',
+        energy_min: 0,
         limit: Math.min(PAGE, max - out.length),
         offset,
       }, 30_000);
