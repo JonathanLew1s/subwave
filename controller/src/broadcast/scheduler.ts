@@ -51,13 +51,10 @@ async function refreshAutoPlaylistInner() {
   // Same candidate sources + weights as the live LLM picker
   // (music/picker.ts buildCandidates), just a deeper pool (TARGET_POOL vs.
   // CANDIDATE_CAP) since this fills an hour-long fallback playlist rather than
-  // a single pick. A show's declared mood drives the mood-tagged-library /
-  // mood-playlist sources, same as the picker; with no active show (no
-  // declared mood) those sources are skipped and the final ordering is biased
-  // toward higher-popularity tracks instead (preferPopularity), so the
-  // fallback playlist still skews toward crowd-pleasers rather than a flat
-  // shuffle of the whole library.
-  const showMood = activeShow?.moods?.[0] || null;
+  // a single pick. Show mood takes precedence; when no show is scheduled, the
+  // ambient context mood (time/weather/festival) drives mood-library selection
+  // so the fallback playlist tracks the current vibe rather than a flat shuffle.
+  const showMood = activeShow?.moods?.[0] || ctx.dominantMood || null;
   const preferPopularity = !showMood;
 
   await library.load();

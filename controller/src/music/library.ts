@@ -18,6 +18,7 @@ let loaded = false;
 
 export async function load() {
   if (config.libraryBackend === 'ma-api') {
+    if (loaded) return;
     await _ma.load();
     // Also open the local library-db so LLM mood tags written by the tagger
     // are accessible for songsByMood() in MA mode. The DB may be empty on first
