@@ -154,13 +154,19 @@ export async function songsByMood(mood: string | null | undefined): Promise<any[
     }));
 
   if (loaded) {
-    const exact = flatten(db.songsByMood(mood));
+    const allExact = flatten(db.songsByMood(mood));
+    // In MA mode, only count tracks that have a file path. Old Navidrome-tagged
+    // rows (path=null) are useless for URI construction and must not satisfy the
+    // MOOD_MIN_EXACT threshold — otherwise they fill auto.m3u with blank URIs.
+    const exact = config.libraryBackend === 'ma-api' ? allExact.filter(t => t.path) : allExact;
     if (exact.length >= MOOD_MIN_EXACT) return exact;
 
     const seen = new Set(exact.map(s => s.id));
     const widened = [...exact];
     for (const neighbour of MOOD_NEIGHBOURS[mood] || []) {
-      for (const row of flatten(db.songsByMood(neighbour))) {
+      const neighbourRows = flatten(db.songsByMood(neighbour));
+      const usable = config.libraryBackend === 'ma-api' ? neighbourRows.filter(t => t.path) : neighbourRows;
+      for (const row of usable) {
         if (seen.has(row.id)) continue;
         widened.push(row);
         seen.add(row.id);
