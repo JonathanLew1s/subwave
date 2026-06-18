@@ -140,8 +140,7 @@ export async function songsByMood(mood: string | null | undefined): Promise<any[
   try {
     const data = await apiGet('/tracks', params);
     return (data.items ?? data.tracks ?? []).map(toLibraryTrack);
-  } catch (err: any) {
-    console.error(`[library-ma:songsByMood] mood=${mood} error:`, err?.message ?? err);
+  } catch {
     return [];
   }
 }

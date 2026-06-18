@@ -138,7 +138,12 @@ const MOOD_MIN_EXACT = 12;
 
 export async function songsByMood(mood: string | null | undefined): Promise<any[]> {
   if (!mood) return [];
-  // Shared row-to-slim mapper — includes path so getAnnotatedUri works in MA mode.
+
+  // In MA mode the API is authoritative — query it directly rather than the
+  // local DB, which holds Navidrome-era tags and is not the source of truth.
+  if (config.libraryBackend === 'ma-api') return _ma.songsByMood(mood);
+
+  // Shared row-to-slim mapper.
   const flatten = (rows: db.TrackRecord[]) =>
     rows.map(r => ({
       id: r.id,
@@ -155,38 +160,22 @@ export async function songsByMood(mood: string | null | undefined): Promise<any[
     }));
 
   if (loaded) {
-    const allExact = flatten(db.songsByMood(mood));
-    // In MA mode, only count tracks that have a file path. Old Navidrome-tagged
-    // rows (path=null) are useless for URI construction and must not satisfy the
-    // MOOD_MIN_EXACT threshold — otherwise they fill auto.m3u with blank URIs.
-    const exact = config.libraryBackend === 'ma-api' ? allExact.filter(t => t.path) : allExact;
-    console.log(`[library:songsByMood] mood=${mood} allExact=${allExact.length} exact(with-path)=${exact.length} backend=${config.libraryBackend}`);
+    const exact = flatten(db.songsByMood(mood));
     if (exact.length >= MOOD_MIN_EXACT) return exact;
 
     const seen = new Set(exact.map(s => s.id));
     const widened = [...exact];
     for (const neighbour of MOOD_NEIGHBOURS[mood] || []) {
       const neighbourRows = flatten(db.songsByMood(neighbour));
-      const usable = config.libraryBackend === 'ma-api' ? neighbourRows.filter(t => t.path) : neighbourRows;
-      for (const row of usable) {
+      for (const row of neighbourRows) {
         if (seen.has(row.id)) continue;
         widened.push(row);
         seen.add(row.id);
       }
     }
-    console.log(`[library:songsByMood] mood=${mood} widened=${widened.length} MOOD_MIN_EXACT=${MOOD_MIN_EXACT}`);
-    // Non-MA: always return what the DB has (even if short — no fallback).
-    // MA mode: only return DB results when the tagger has built a useful corpus;
-    // fall through to the MA energy filter when still too sparse.
-    if (config.libraryBackend !== 'ma-api' || widened.length >= MOOD_MIN_EXACT) return widened;
+    return widened;
   }
 
-  if (config.libraryBackend === 'ma-api') {
-    console.log(`[library:songsByMood] mood=${mood} falling through to _ma.songsByMood`);
-    const result = await _ma.songsByMood(mood);
-    console.log(`[library:songsByMood] mood=${mood} _ma returned ${result.length} tracks`);
-    return result;
-  }
   return [];
 }
 
