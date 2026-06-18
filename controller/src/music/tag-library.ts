@@ -188,8 +188,8 @@ async function main() {
   // ---- Phase A: iterate Navidrome and upsert track metadata into DB ------
   // Cheap; ensures every Navidrome song is in the tracks table so subsequent
   // phases can operate purely off SQL.
-  console.log('[tag] walking Navidrome library...');
-  reportProgress({ phase: 'walk', label: 'Scanning Navidrome library', done: 0 });
+  console.log('[tag] walking music library...');
+  reportProgress({ phase: 'walk', label: 'Scanning music library', done: 0 });
   let walked = 0;
   const liveIds = new Set<string>();
   for await (const song of subsonic.iterateAllSongs()) {
@@ -200,6 +200,7 @@ async function main() {
       year: song.year,
       genre: song.genre,
       duration: song.duration,
+      path: (song as any).path ?? null,
     });
     liveIds.add(song.id);
     walked += 1;

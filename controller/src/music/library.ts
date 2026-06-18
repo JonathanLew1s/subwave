@@ -17,7 +17,18 @@ import * as _ma from './library-ma.js';
 let loaded = false;
 
 export async function load() {
-  if (config.libraryBackend === 'ma-api') { await _ma.load(); return; }
+  if (config.libraryBackend === 'ma-api') {
+    await _ma.load();
+    // Also open the local library-db so LLM mood tags written by the tagger
+    // are accessible for songsByMood() in MA mode. The DB may be empty on first
+    // boot — that's fine; songsByMood() falls back to the MA energy filter when
+    // the tagged corpus is sparse.
+    if (!db.isOpen()) {
+      await db.open({ embeddingDim: resolveEmbeddingDim(), adoptStoredDim: true });
+    }
+    loaded = true;
+    return;
+  }
   if (loaded) return;
   // adoptStoredDim:true makes the live controller honour whatever dim the tagger
   // actually probed and recorded, instead of trusting the name→dim guess. A
@@ -76,6 +87,7 @@ export function set(songId: string, data: any) {
     year: data.year,
     genre: data.genre,
     duration: data.duration ?? null,
+    path: data.path ?? null,
   });
   if (Array.isArray(data.moods) || data.energy !== undefined) {
     db.upsertTrackTags(songId, {
@@ -124,8 +136,8 @@ const MOOD_NEIGHBOURS: Record<string, string[]> = {
 const MOOD_MIN_EXACT = 12;
 
 export async function songsByMood(mood: string | null | undefined): Promise<any[]> {
-  if (config.libraryBackend === 'ma-api') return _ma.songsByMood(mood);
-  if (!mood || !loaded) return [];
+  if (!mood) return [];
+  // Shared row-to-slim mapper — includes path so getAnnotatedUri works in MA mode.
   const flatten = (rows: db.TrackRecord[]) =>
     rows.map(r => ({
       id: r.id,
@@ -134,32 +146,40 @@ export async function songsByMood(mood: string | null | undefined): Promise<any[
       album: r.album,
       year: r.year,
       genre: r.genre,
+      path: r.path,
       moods: r.moods,
       energy: r.energy,
       popularitySong: r.popularitySong,
       popularityAlbum: r.popularityAlbum,
     }));
 
-  const exact = flatten(db.songsByMood(mood));
-  if (exact.length >= MOOD_MIN_EXACT) return exact;
+  if (loaded) {
+    const exact = flatten(db.songsByMood(mood));
+    if (exact.length >= MOOD_MIN_EXACT) return exact;
 
-  const seen = new Set(exact.map(s => s.id));
-  const widened = [...exact];
-  for (const neighbour of MOOD_NEIGHBOURS[mood] || []) {
-    for (const row of flatten(db.songsByMood(neighbour))) {
-      if (seen.has(row.id)) continue;
-      widened.push(row);
-      seen.add(row.id);
+    const seen = new Set(exact.map(s => s.id));
+    const widened = [...exact];
+    for (const neighbour of MOOD_NEIGHBOURS[mood] || []) {
+      for (const row of flatten(db.songsByMood(neighbour))) {
+        if (seen.has(row.id)) continue;
+        widened.push(row);
+        seen.add(row.id);
+      }
     }
+    // Non-MA: always return what the DB has (even if short — no fallback).
+    // MA mode: only return DB results when the tagger has built a useful corpus;
+    // fall through to the MA energy filter when still too sparse.
+    if (config.libraryBackend !== 'ma-api' || widened.length >= MOOD_MIN_EXACT) return widened;
   }
-  return widened;
+
+  if (config.libraryBackend === 'ma-api') return _ma.songsByMood(mood);
+  return [];
 }
 
 // Union of songsByMood() across multiple moods, deduped by id. Shows now
 // declare 1-3 moods; this widens the candidate universe accordingly while
 // reusing the same per-mood neighbour-widening logic above.
 export async function songsByMoods(moods: string[] | null | undefined): Promise<any[]> {
-  if (config.libraryBackend === 'ma-api') return _ma.songsByMoods(moods);
   if (!moods || !moods.length) return [];
   const seen = new Set<string>();
   const out: any[] = [];

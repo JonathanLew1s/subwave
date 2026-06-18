@@ -118,6 +118,9 @@ export interface TrackRecord {
   // Music Assistant item_id — set when the track was synced from MA (sync-from-ma.ts).
   // NULL for tracks populated via the Navidrome/Subsonic path.
   maItemId: number | null;
+  // Relative file path for the MA backend (stored by the tagger from song.path).
+  // NULL for Navidrome-backend installs where Liquidsoap uses stream URLs instead.
+  path: string | null;
 }
 
 // A key over a time range: tonic note (sharps) + mode.
@@ -150,6 +153,7 @@ export interface TrackMeta {
   year?: number | string | null;
   genre?: string | null;
   duration?: number | null;
+  path?: string | null;
 }
 
 export interface TrackEnrichment {
@@ -410,6 +414,14 @@ async function migrate(embeddingDim: number, reseed = false, adoptStoredDim = fa
     d.pragma('user_version = 11');
   }
 
+  if (userVersion < 12) {
+    // Relative file path — stored by the tagger from song.path when
+    // LIBRARY_BACKEND=ma-api. Used by getAnnotatedUri to build file:// URIs.
+    // NULL for Navidrome-backend installs (Liquidsoap uses HTTP stream URLs).
+    runDdl(d, `ALTER TABLE tracks ADD COLUMN path TEXT;`);
+    d.pragma('user_version = 12');
+  }
+
   // The vec0 virtual table carries the embedding dim in its schema. If the
   // stored dim doesn't match the requested one, the caller asked for a model
   // swap — that's a --reseed operation, not an auto-migration.
@@ -621,15 +633,16 @@ export function upsertTrackMeta(id: string, meta: TrackMeta): void {
   requireDb()
     .prepare(
       `
-      INSERT INTO tracks (id, title, artist, album, year, genre, duration_sec)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO tracks (id, title, artist, album, year, genre, duration_sec, path)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         title        = COALESCE(excluded.title, tracks.title),
         artist       = COALESCE(excluded.artist, tracks.artist),
         album        = COALESCE(excluded.album, tracks.album),
         year         = COALESCE(excluded.year, tracks.year),
         genre        = COALESCE(excluded.genre, tracks.genre),
-        duration_sec = COALESCE(excluded.duration_sec, tracks.duration_sec)
+        duration_sec = COALESCE(excluded.duration_sec, tracks.duration_sec),
+        path         = COALESCE(excluded.path, tracks.path)
     `,
     )
     .run(
@@ -640,6 +653,7 @@ export function upsertTrackMeta(id: string, meta: TrackMeta): void {
       normaliseYear(meta.year),
       meta.genre ?? null,
       Number.isFinite(meta.duration as number) ? (meta.duration as number) : null,
+      meta.path ?? null,
     );
 }
 
@@ -1393,6 +1407,7 @@ function rowToTrack(row: any): TrackRecord {
     bars: row.bars_json ? parseMsArray(row.bars_json) : null,
     keyRanges: row.key_ranges_json ? parseKeyRanges(row.key_ranges_json) : null,
     maItemId: row.ma_item_id ?? null,
+    path: row.path ?? null,
   };
 }
 
