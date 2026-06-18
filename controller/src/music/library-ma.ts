@@ -6,33 +6,6 @@ import { apiGet, toSong } from './ma-db-api.js';
 import type { FilterOpts, FilteredRow } from './library.js';
 
 // ---------------------------------------------------------------------------
-// Observatory cache — all analysed tracks, fetched once and held 30 min.
-// The /tracks/observatory endpoint is server-cached; client-side we cache it
-// too so songsByMood (called per mood per refresh) never hits the API more
-// than once per TTL window.
-// ---------------------------------------------------------------------------
-let _obsTracks: any[] | null = null;
-let _obsCachedAt = 0;
-const OBS_CACHE_TTL = 30 * 60 * 1000;
-
-async function getObservatoryTracks(): Promise<any[]> {
-  if (_obsTracks && Date.now() - _obsCachedAt < OBS_CACHE_TTL) return _obsTracks;
-  const data = await apiGet<{ total: number; items: any[] }>('/tracks/observatory', {}, 30_000);
-  _obsTracks = data.items ?? [];
-  _obsCachedAt = Date.now();
-  return _obsTracks;
-}
-
-function shuffle<T>(arr: T[]): T[] {
-  const a = [...arr];
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
-}
-
-// ---------------------------------------------------------------------------
 // In-memory cache — refreshed on load(). Tracks are never cached in full;
 // only aggregate stats and genre list are kept to answer stats() synchronously.
 // ---------------------------------------------------------------------------
@@ -165,16 +138,13 @@ export function stats() {
 export async function songsByMood(mood: string | null | undefined): Promise<any[]> {
   if (!mood) return [];
   const [energyMin, energyMax] = MOOD_ENERGY[mood] ?? [null, null];
+  if (energyMin == null && energyMax == null) return [];
   try {
-    const all = await getObservatoryTracks();
-    const filtered = all.filter(t => {
-      const e = t.analysis?.energy ?? null;
-      if (e == null) return false;
-      if (energyMin != null && e < energyMin) return false;
-      if (energyMax != null && e > energyMax) return false;
-      return true;
-    });
-    return shuffle(filtered).map(toLibraryTrack);
+    const params: Record<string, any> = { order: 'random', limit: 200, include: 'analysis' };
+    if (energyMin != null) params.energy_min = energyMin;
+    if (energyMax != null) params.energy_max = energyMax;
+    const data = await apiGet<{ total: number; items: any[] }>('/tracks', params);
+    return (data.items ?? []).map(toLibraryTrack);
   } catch {
     return [];
   }
@@ -182,7 +152,6 @@ export async function songsByMood(mood: string | null | undefined): Promise<any[
 
 export async function songsByMoods(moods: string[] | null | undefined): Promise<any[]> {
   if (!moods?.length) return [];
-  // Fetch observatory once, then filter client-side for each mood — no extra API calls.
   const seen = new Set<string>();
   const out: any[] = [];
   for (const mood of moods) {
@@ -195,22 +164,14 @@ export async function songsByMoods(moods: string[] | null | undefined): Promise<
 
 export async function songsByEnergy(energy: string | null | undefined): Promise<any[]> {
   if (!energy) return [];
-  let energyMin: number | null = null;
-  let energyMax: number | null = null;
-  if (energy === 'low') energyMax = 0.11;
-  else if (energy === 'medium') { energyMin = 0.11; energyMax = 0.22; }
-  else if (energy === 'high') energyMin = 0.22;
+  const params: Record<string, any> = { order: 'random', limit: 200, include: 'analysis' };
+  if (energy === 'low') params.energy_max = 0.11;
+  else if (energy === 'medium') { params.energy_min = 0.11; params.energy_max = 0.22; }
+  else if (energy === 'high') params.energy_min = 0.22;
   else return [];
   try {
-    const all = await getObservatoryTracks();
-    const filtered = all.filter(t => {
-      const e = t.analysis?.energy ?? null;
-      if (e == null) return false;
-      if (energyMin != null && e < energyMin) return false;
-      if (energyMax != null && e > energyMax) return false;
-      return true;
-    });
-    return shuffle(filtered).map(toLibraryTrack);
+    const data = await apiGet<{ total: number; items: any[] }>('/tracks', params);
+    return (data.items ?? []).map(toLibraryTrack);
   } catch {
     return [];
   }
