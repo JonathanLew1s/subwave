@@ -270,20 +270,30 @@ function shapeObservatoryTrack(t: any): any {
 }
 
 // Observatory data — returns all analysed tracks shaped for the constellation view.
-// Uses the dedicated /tracks/observatory endpoint which:
-//   - drives the query from audio_analysis (7K rows) instead of tracks (37K+)
-//   - caches results server-side for 5 minutes
-// Falls back to the paginated path if the sidecar is older and lacks the endpoint.
+// Paginates /tracks?include=analysis&energy_min=0 to fetch only sonic-analysed
+// tracks (~7K rows). Stops early once `max` is reached.
 export async function tracksForObservatory(max: number): Promise<any[]> {
-  try {
-    // 60s timeout: cold query scans 93K unindexed rows, takes ~10-20s first run.
-    // Sidecar caches for 30 min so warm hits return in ~200ms.
-    const data = await apiGet('/tracks/observatory', {}, 60_000);
-    const items: any[] = data.items ?? [];
-    return items.slice(0, max).map(shapeObservatoryTrack);
-  } catch {
-    return [];
+  const PAGE = 500;
+  const out: any[] = [];
+  let offset = 0;
+  while (out.length < max) {
+    try {
+      const data = await apiGet('/tracks', {
+        include: 'analysis',
+        energy_min: 0,
+        limit: Math.min(PAGE, max - out.length),
+        offset,
+      }, 30_000);
+      const items: any[] = data.items ?? [];
+      if (items.length === 0) break;
+      for (const t of items) out.push(shapeObservatoryTrack(t));
+      if (out.length >= (data.total ?? 0) || items.length < PAGE) break;
+      offset += items.length;
+    } catch {
+      break;
+    }
   }
+  return out;
 }
 
 // coverage endpoint shape
