@@ -564,6 +564,20 @@ const DEFAULTS = {
       'soundtrack', 'original score', 'original motion picture', 'motion picture', 'ost',
       'from the film', 'from the movie', 'from the series', 'from the show',
     ],
+    // MA-mode composite shortlist (see music/ma-candidate-pool.ts). shadowEnabled
+    // computes the shortlist on every MA-mode track event and logs a comparison
+    // against the live pick — it never affects what actually plays. There is
+    // deliberately no "live" toggle yet: that's a later decision once shadow
+    // data has been reviewed.
+    maShortlist: {
+      shadowEnabled: false,
+      targetSize: 12,
+      themeSlots: 5,
+      flowSlots: 4,
+      discoverySlots: 2,
+      oldieSlots: 1,
+      eraWindowYears: 25,
+    },
   },
   // Outbound webhooks. Each entry POSTs station events (see broadcast/
   // webhooks.ts for the event list) to `url` with a fire-and-forget HTTP
@@ -1094,6 +1108,37 @@ export async function load() {
             .map((p: any) => (p as string).trim().slice(0, 100))
             .slice(0, 50)
         : [...DEFAULTS.picker.excludePatterns],
+      maShortlist: {
+        shadowEnabled: typeof stored.picker?.maShortlist?.shadowEnabled === 'boolean'
+          ? stored.picker.maShortlist.shadowEnabled
+          : DEFAULTS.picker.maShortlist.shadowEnabled,
+        targetSize: (() => {
+          const v = stored.picker?.maShortlist?.targetSize;
+          return typeof v === 'number' && Number.isFinite(v) && v >= 4 && v <= 30
+            ? Math.floor(v) : DEFAULTS.picker.maShortlist.targetSize;
+        })(),
+        themeSlots: (() => {
+          const v = stored.picker?.maShortlist?.themeSlots;
+          return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.floor(v) : DEFAULTS.picker.maShortlist.themeSlots;
+        })(),
+        flowSlots: (() => {
+          const v = stored.picker?.maShortlist?.flowSlots;
+          return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.floor(v) : DEFAULTS.picker.maShortlist.flowSlots;
+        })(),
+        discoverySlots: (() => {
+          const v = stored.picker?.maShortlist?.discoverySlots;
+          return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.floor(v) : DEFAULTS.picker.maShortlist.discoverySlots;
+        })(),
+        oldieSlots: (() => {
+          const v = stored.picker?.maShortlist?.oldieSlots;
+          return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.floor(v) : DEFAULTS.picker.maShortlist.oldieSlots;
+        })(),
+        eraWindowYears: (() => {
+          const v = stored.picker?.maShortlist?.eraWindowYears;
+          return typeof v === 'number' && Number.isFinite(v) && v >= 1 && v <= 100
+            ? Math.floor(v) : DEFAULTS.picker.maShortlist.eraWindowYears;
+        })(),
+      },
     },
     webhooks: normalizeWebhooks(stored.webhooks),
     library: {
