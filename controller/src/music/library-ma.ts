@@ -225,6 +225,28 @@ export async function tracksLikeThis(id: string, k: number): Promise<any[]> {
 // Audio and text similarity both use CLAP in MA mode.
 export const tracksLikeThisAudio = tracksLikeThis;
 
+// Fetches one track's raw sonic-analysis axes by id, for centroid
+// computation (see music/theme-centroid.ts). Returns null on any failure or
+// when the track has no analysis at all — callers must treat that as "this
+// exemplar doesn't count", never as an error.
+export async function getAnalysisAxes(id: string): Promise<Record<string, number | null> | null> {
+  if (!id) return null;
+  try {
+    const t = await apiGet<any>(`/tracks/${id}`, { include: 'analysis' });
+    if (!t?.analysis) return null;
+    return {
+      valence: typeof t.analysis.valence === 'number' ? t.analysis.valence : null,
+      arousal: typeof t.analysis.arousal === 'number' ? t.analysis.arousal : null,
+      danceability: typeof t.analysis.danceability === 'number' ? t.analysis.danceability : null,
+      acousticness: typeof t.analysis.acousticness === 'number' ? t.analysis.acousticness : null,
+      instrumentalness: typeof t.analysis.instrumentalness === 'number' ? t.analysis.instrumentalness : null,
+      brightness: typeof t.analysis.brightness === 'number' ? t.analysis.brightness : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function filter(opts: FilterOpts = {}): Promise<{ total: number; rows: FilteredRow[] }> {
   const limit = opts.limit ?? 50;
   const offset = opts.offset ?? 0;
