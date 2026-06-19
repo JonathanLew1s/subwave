@@ -24,6 +24,9 @@ import * as pool from '../music/pool.js';
 import * as picker from '../music/picker.js';
 import { refreshPopularity } from '../music/popularity.js';
 import { recencyWindowsForLibrary } from '../music/recency.js';
+import { buildMaShortlist } from '../music/ma-candidate-pool.js';
+import { computeThemeCentroid } from '../music/theme-centroid.js';
+import * as pickerShadowLog from './picker-shadow-log.js';
 
 const TARGET_POOL = 50;
 
@@ -98,6 +101,64 @@ async function refreshAutoPlaylistInner() {
     Object.entries(fromSource).filter(([, v]) => v > 0).map(([k, v]) => `${k}=${v}`).join(' ') +
     ` of ${Object.entries(sources).map(([k, v]) => `${k}=${v}`).join(' ')}` +
     `, moods=${showMoods.join('+') || `none/popularity (${ctx.dominantMood || 'n/a'})`})`);
+
+  maybeRunAutoPlaylistShadow(
+    showMoods, activeShow?.id ?? null, activeShow?.exemplarTrackIds ?? [], fromSource,
+    recentIds, recentArtists, justPlayedArtists,
+  ).catch(() => {});
+}
+
+// Shadow-mode comparison for the auto.m3u path — computes what the
+// centroid-gated pool would have produced for this refresh, and logs it
+// against what actually got written to auto.m3u. Read-only, fire-and-forget,
+// fully isolated: any failure here is swallowed and logged, never thrown,
+// because this must never be able to affect the real file write. Mirrors
+// dj-agent.ts's maybeRunPickerShadow for the live-pick path.
+async function maybeRunAutoPlaylistShadow(
+  showMoods: string[],
+  activeShowId: string | null,
+  exemplarTrackIds: string[],
+  liveComposition: Record<string, number>,
+  recentIds: Set<string>,
+  recentArtists: Set<string>,
+  justPlayedArtists: Set<string>,
+) {
+  // Named pickerSettings, not picker — this file already imports the
+  // music/picker.js module as `picker`; shadowing it here would confuse a
+  // future reader even though it's scoped to this function only.
+  const pickerSettings = settings.get().picker;
+  if (!pickerSettings?.maShortlist?.autoPlaylistShadowEnabled || config.libraryBackend !== 'ma-api') return;
+  try {
+    const themeCentroid = exemplarTrackIds.length
+      ? await computeThemeCentroid(exemplarTrackIds, pickerSettings.maShortlist.themeCentroid)
+      : null;
+    if (!themeCentroid) return; // nothing to compare without exemplars — not an error
+
+    const shortlist = await buildMaShortlist({
+      showMoods,
+      currentTrack: queue.current?.track ?? null,
+      recentIds,
+      recentArtists,
+      justPlayedArtists,
+      config: pickerSettings.maShortlist,
+      themeCentroid,
+      themeCentroidConfig: pickerSettings.maShortlist.themeCentroid,
+    });
+
+    pickerShadowLog.record({
+      kind: 'auto-playlist',
+      t: new Date().toISOString(),
+      show: activeShowId,
+      themeCentroidExemplars: themeCentroid.exemplarCount,
+      liveComposition,
+      gatedShortlist: shortlist.map((e) => ({
+        id: e.track.id, title: e.track.title, artist: e.track.artist, year: e.track.year,
+        slot: e.slot, score: Math.round(e.score * 100) / 100,
+      })),
+    });
+  } catch (err: any) {
+    queue.log?.('error', `auto-playlist shadow comparison failed (non-fatal): ${err.message}`);
+  }
 }
 
 // ---------------------------------------------------------------------------
