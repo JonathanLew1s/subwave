@@ -12,6 +12,7 @@ import * as settings from '../settings.js';
 import { queue } from '../broadcast/queue.js';
 import * as session from '../broadcast/session.js';
 import * as requestLog from '../broadcast/request-log.js';
+import * as pickerShadowLog from '../broadcast/picker-shadow-log.js';
 import { requireAdmin } from '../middleware/auth.js';
 
 export const router = express.Router();
@@ -24,6 +25,17 @@ router.get('/requests', requireAdmin, (req, res) => {
   try {
     res.json({ requests: requestLog.snapshot(50) });
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /dj/picker-shadow — recent MA composite-shortlist shadow comparisons:
+// what the live picker chose vs what the new shortlist would have offered.
+// Shadow-only (see picker-shadow-log.ts) — never reflects what's airing.
+router.get('/dj/picker-shadow', requireAdmin, (req, res) => {
+  try {
+    res.json({ comparisons: pickerShadowLog.snapshot(50) });
+  } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
