@@ -28,6 +28,7 @@ import { withTrace, logEvent } from '../observability/events.js';
 import { recencyWindowsForLibrary } from '../music/recency.js';
 import { config } from '../config.js';
 import { buildMaShortlist } from '../music/ma-candidate-pool.js';
+import { computeThemeCentroid } from '../music/theme-centroid.js';
 import * as pickerShadowLog from './picker-shadow-log.js';
 
 // --- Feature 4: DJ-mode mini-runs ------------------------------------------
@@ -300,6 +301,12 @@ async function maybeRunPickerShadow(queue: any, eventCurrent: any) {
     const recentArtists = queue.recentArtistsSince(windows.artistHours);
     const justPlayedArtists = queue.justPlayedArtistKeys();
 
+    // null when the show has no exemplars (or too few analysed ones) —
+    // buildMaShortlist treats that as "no gating", same as before this task.
+    const themeCentroid = activeShow?.exemplarTrackIds?.length
+      ? await computeThemeCentroid(activeShow.exemplarTrackIds, picker.maShortlist.themeCentroid)
+      : null;
+
     const shortlist = await buildMaShortlist({
       showMoods: activeShow?.moods ?? [],
       currentTrack: eventCurrent,
@@ -307,12 +314,16 @@ async function maybeRunPickerShadow(queue: any, eventCurrent: any) {
       recentArtists,
       justPlayedArtists,
       config: picker.maShortlist,
+      themeCentroid,
+      themeCentroidConfig: picker.maShortlist.themeCentroid,
     });
 
     pickerShadowLog.record({
+      kind: 'live-pick',
       t: new Date().toISOString(),
       show: activeShow?.id ?? null,
       currentTrackId: eventCurrent?.id ?? null,
+      themeCentroidExemplars: themeCentroid?.exemplarCount ?? null,
       livePick: livePick ? { id: livePick.id, title: livePick.title, artist: livePick.artist } : null,
       livePickInShortlist: !!livePick?.id && shortlist.some((e) => e.track.id === livePick.id),
       shortlist: shortlist.map((e) => ({
