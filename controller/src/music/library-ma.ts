@@ -57,6 +57,7 @@ function toLibraryTrack(t: any): any {
     path: s.path,         // relative file path — required by getAnnotatedUri for file:// URIs
     moods: [],            // MA has no LLM mood tags
     energy: t.analysis?.energy != null ? energyLabel(t.analysis.energy) : null,
+    // popularitySong/popularityAlbum: the Navidrome/Subsonic play-count fields — a different concept from MA's own metadata.popularity surfaced below.
     popularitySong: null,
     popularityAlbum: null,
     bpm: s.bpm,
@@ -64,6 +65,16 @@ function toLibraryTrack(t: any): any {
     loudnessLufs: s.loudnessLufs,
     paceMean: null,       // pace curves not in the sidecar response
     _energyRaw: t.analysis?.energy ?? null,
+    // Richer sonic-analysis axes — null-safe, only present once MA's analysis pass has reached a given track (~20% CLAP/BPM/sonic coverage today).
+    valence: t.analysis?.valence ?? null,
+    arousal: t.analysis?.arousal ?? null,
+    danceability: t.analysis?.danceability ?? null,
+    acousticness: t.analysis?.acousticness ?? null,
+    instrumentalness: t.analysis?.instrumentalness ?? null,
+    brightness: t.analysis?.brightness ?? null,
+    speechiness: t.analysis?.speechiness ?? null,
+    roughness: t.analysis?.roughness ?? null,
+    popularity: t.popularity ?? null,
   };
 }
 
@@ -86,6 +97,12 @@ function toFilteredRow(t: any): FilteredRow {
     loudnessLufs: lt.loudnessLufs,
     paceMean: null,
     instrumental: null,
+    valence: lt.valence,
+    arousal: lt.arousal,
+    danceability: lt.danceability,
+    acousticness: lt.acousticness,
+    instrumentalness: lt.instrumentalness,
+    popularity: lt.popularity,
   };
 }
 

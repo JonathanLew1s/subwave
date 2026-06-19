@@ -54,6 +54,7 @@ export function toSong(t: any): any {
     path: t.file_path ?? null,   // relative path — used by getLocalPath / getAnnotatedUri
     coverArt: String(t.id),      // getCoverArtUrl / /cover/:id use this
     favorite: t.favorite ?? false,
+    popularity: t.popularity ?? null,
     // Analysis fields forwarded so queue.ts can compute loudness gain / crossfade
     loudnessLufs: t.analysis?.loudness_lufs ?? null,
     bpm: t.analysis?.bpm != null ? Math.round(t.analysis.bpm * 10) / 10 : null,

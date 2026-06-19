@@ -417,6 +417,12 @@ export interface FilteredRow {
   loudnessLufs?: number | null;
   paceMean?: number | null;
   instrumental?: boolean | null;
+  valence?: number | null;
+  arousal?: number | null;
+  danceability?: number | null;
+  acousticness?: number | null;
+  instrumentalness?: number | null;
+  popularity?: number | null;
 }
 
 export async function getCoverage(): Promise<any> {
