@@ -302,7 +302,10 @@ export async function tracksLikeThisAudio(seed: string, k: number): Promise<any[
 // to the query — including ones whose lyrics don't literally contain those
 // words.
 export function tracksByVector(vec: number[] | Float32Array, k: number): any[] {
-  if (!loaded) return [];
+  // MA's sidecar has no raw-vector / free-text-embedding endpoint, and the
+  // local SQLite vector table this function reads from is never populated
+  // for MA-backed tracks — fail closed instead of querying a dead dataset.
+  if (!loaded || config.libraryBackend === 'ma-api') return [];
   const hits = db.knnByVector(vec, k);
   const out: any[] = [];
   for (const hit of hits) {
@@ -316,7 +319,10 @@ export function tracksByVector(vec: number[] | Float32Array, k: number): any[] {
 // string ('high' / 'medium' / 'low') by median pairwise distance, or null if
 // insufficient data. Tracks without embeddings are silently skipped.
 export function recentPicksSimilarity(trackIds: string[], n: number = 4): string | null {
-  if (!loaded || !trackIds.length) return null;
+  // MA's sidecar has no raw-vector / free-text-embedding endpoint, and the
+  // local SQLite vector table this function reads from is never populated
+  // for MA-backed tracks — fail closed instead of querying a dead dataset.
+  if (!loaded || !trackIds.length || config.libraryBackend === 'ma-api') return null;
   const ids = trackIds.slice(0, n).filter(id => !!id);
   if (ids.length < 2) return null;
   const vectors: (Float32Array | null)[] = ids.map(id => db.getVector(id));
@@ -342,6 +348,10 @@ export function recentPicksSimilarity(trackIds: string[], n: number = 4): string
 // the audio anchor instead of the current track. Returns [] on an empty audio
 // index, so the picker falls through to its other sources.
 export function tracksByAudioVector(vec: number[] | Float32Array, k: number): any[] {
+  // MA's sidecar has no raw-vector / free-text-embedding endpoint, and the
+  // local SQLite vector table this function reads from is never populated
+  // for MA-backed tracks — fail closed instead of querying a dead dataset.
+  if (config.libraryBackend === 'ma-api') return [];
   if (!loaded) return [];
   const hits = db.knnByAudioVector(vec, k);
   const out: any[] = [];
