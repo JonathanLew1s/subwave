@@ -34,7 +34,10 @@ router.get('/requests', requireAdmin, (req, res) => {
 // Shadow-only (see picker-shadow-log.ts) — never reflects what's airing.
 router.get('/dj/picker-shadow', requireAdmin, (req, res) => {
   try {
-    res.json({ comparisons: pickerShadowLog.snapshot(50) });
+    const kind = typeof req.query.kind === 'string' ? req.query.kind : null;
+    const all = pickerShadowLog.snapshot(200);
+    const filtered = kind ? all.filter((c: any) => c.kind === kind) : all;
+    res.json({ comparisons: filtered.slice(0, 50) });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
