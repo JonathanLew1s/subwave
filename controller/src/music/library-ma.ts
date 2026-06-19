@@ -63,6 +63,7 @@ function toLibraryTrack(t: any): any {
     bpm: s.bpm,
     musicalKey: s.musicalKey,
     loudnessLufs: s.loudnessLufs,
+    favorite: s.favorite ?? false,
     paceMean: null,       // pace curves not in the sidecar response
     _energyRaw: t.analysis?.energy ?? null,
     // Richer sonic-analysis axes — null-safe, only present once MA's analysis pass has reached a given track (~20% CLAP/BPM/sonic coverage today).

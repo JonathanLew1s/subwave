@@ -44,9 +44,12 @@ export interface BuildShortlistArgs {
 // being penalised — partial CLAP/sonic coverage (~20% of the library today)
 // must never zero out a track that's otherwise on-brief.
 function moodFit(track: any): number {
+  // songsByMood already filters server-side to the show's mood/energy band
+  // (energy_min/energy_max), so every candidate here is already in-band —
+  // this is a flat binary signal (analysed vs. not), not a centre-distance
+  // score. True within-band ranking would need the raw energy value scored
+  // against the band's midpoint, which isn't wired through yet.
   if (track._energyRaw == null) return 0.5;
-  // Already filtered to the show's mood band by songsByMoods — this just
-  // rewards being nearer the band centre over its edges.
   return 1;
 }
 
@@ -150,6 +153,7 @@ export async function buildMaShortlist(args: BuildShortlistArgs): Promise<Shortl
     if (entries.filter((e) => e.slot === 'discovery').length >= config.discoverySlots) break;
     if (usedIds.has(track.id)) continue;
     usedIds.add(track.id);
+    usedArtistKeys.add(coreArtistKey(track) || artistKey(track));
     entries.push({ track, slot: 'discovery', score });
   }
 
