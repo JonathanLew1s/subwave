@@ -203,11 +203,15 @@ export async function tracksLikeThis(id: string, k: number): Promise<any[]> {
       `/tracks/${id}/similar`,
       { limit: k },
     );
+    // include: 'analysis' is required here — without it bpm/musicalKey/the
+    // sonic axes all come back null regardless of real analysis coverage,
+    // silently zeroing flowFit's bpm/key-compat terms (discovered via live
+    // validation; this fetch shipped without it originally).
     const results = data.results ?? [];
     const tracks = await Promise.all(
       results.slice(0, k).map(async (r) => {
         try {
-          const t = await apiGet(`/tracks/${r.id}`);
+          const t = await apiGet(`/tracks/${r.id}`, { include: 'analysis' });
           return { ...toLibraryTrack(t), _similarity: r.score };
         } catch { return null; }
       }),
