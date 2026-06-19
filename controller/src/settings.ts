@@ -571,12 +571,24 @@ const DEFAULTS = {
     // data has been reviewed.
     maShortlist: {
       shadowEnabled: false,
+      // autoPlaylistShadowEnabled gates a SEPARATE shadow comparison for the
+      // auto.m3u fallback path (scheduler.ts) — independent from
+      // shadowEnabled above, which only covers the live agent-pick path.
+      autoPlaylistShadowEnabled: false,
       targetSize: 12,
       themeSlots: 5,
       flowSlots: 4,
       discoverySlots: 2,
       oldieSlots: 1,
       eraWindowYears: 25,
+      // Centroid-distance gate config (music/theme-centroid.ts). Only takes
+      // effect for shows with >= minExemplars analysed exemplar tracks —
+      // otherwise theme fit stays the existing flat energy-band behaviour.
+      themeCentroid: {
+        minExemplars: 2,
+        minPoolSize: 60,
+        maxThreshold: 0.30,
+      },
     },
   },
   // Outbound webhooks. Each entry POSTs station events (see broadcast/
@@ -784,6 +796,16 @@ function normalizeShows(raw: any, personaIds: string[]) {
         .map((p: any) => p.trim().slice(0, 100))
         .slice(0, 50);
     }
+    // exemplarTrackIds: optional, 0-8 MA track ids representing the show's
+    // actual sound. Empty/absent = no centroid-based theme gating for this
+    // show (falls back to today's flat energy-band behaviour — fully
+    // backward compatible). See music/theme-centroid.ts.
+    const exemplarTrackIds: string[] = Array.isArray(item.exemplarTrackIds)
+      ? item.exemplarTrackIds
+          .filter((id: any) => typeof id === 'string' && id.trim().length > 0)
+          .map((id: any) => id.trim().slice(0, 64))
+          .slice(0, 8)
+      : [];
     out.push({
       id,
       name,
@@ -793,6 +815,7 @@ function normalizeShows(raw: any, personaIds: string[]) {
       moods,
       themeId,
       excludePatterns,
+      exemplarTrackIds,
     });
     if (out.length >= SHOWS_LIMIT) break;
   }
@@ -1112,6 +1135,9 @@ export async function load() {
         shadowEnabled: typeof stored.picker?.maShortlist?.shadowEnabled === 'boolean'
           ? stored.picker.maShortlist.shadowEnabled
           : DEFAULTS.picker.maShortlist.shadowEnabled,
+        autoPlaylistShadowEnabled: typeof stored.picker?.maShortlist?.autoPlaylistShadowEnabled === 'boolean'
+          ? stored.picker.maShortlist.autoPlaylistShadowEnabled
+          : DEFAULTS.picker.maShortlist.autoPlaylistShadowEnabled,
         targetSize: (() => {
           const v = stored.picker?.maShortlist?.targetSize;
           return typeof v === 'number' && Number.isFinite(v) && v >= 4 && v <= 30
@@ -1138,6 +1164,23 @@ export async function load() {
           return typeof v === 'number' && Number.isFinite(v) && v >= 1 && v <= 100
             ? Math.floor(v) : DEFAULTS.picker.maShortlist.eraWindowYears;
         })(),
+        themeCentroid: {
+          minExemplars: (() => {
+            const v = stored.picker?.maShortlist?.themeCentroid?.minExemplars;
+            return typeof v === 'number' && Number.isFinite(v) && v >= 1 && v <= 8
+              ? Math.floor(v) : DEFAULTS.picker.maShortlist.themeCentroid.minExemplars;
+          })(),
+          minPoolSize: (() => {
+            const v = stored.picker?.maShortlist?.themeCentroid?.minPoolSize;
+            return typeof v === 'number' && Number.isFinite(v) && v >= 10 && v <= 400
+              ? Math.floor(v) : DEFAULTS.picker.maShortlist.themeCentroid.minPoolSize;
+          })(),
+          maxThreshold: (() => {
+            const v = stored.picker?.maShortlist?.themeCentroid?.maxThreshold;
+            return typeof v === 'number' && Number.isFinite(v) && v > 0 && v <= 1
+              ? v : DEFAULTS.picker.maShortlist.themeCentroid.maxThreshold;
+          })(),
+        },
       },
     },
     webhooks: normalizeWebhooks(stored.webhooks),
@@ -1493,7 +1536,27 @@ function validateShowsStrict(raw, personas, allowedThemeIds: Set<string>) {
         return v;
       });
     }
-    return { id, name, topic, vibe, personaId: item.personaId, moods: item.moods, themeId, excludePatterns };
+    // exemplarTrackIds: optional, 0-8 ids. No format validation beyond
+    // "non-empty string" — an id that doesn't resolve (wrong backend, typo,
+    // deleted track) is handled at centroid-compute time by simply not
+    // contributing to the centroid, not rejected here.
+    let exemplarTrackIds: string[] = [];
+    if (item.exemplarTrackIds !== undefined && item.exemplarTrackIds !== null) {
+      if (!Array.isArray(item.exemplarTrackIds)) {
+        throw new Error(`shows[${i}].exemplarTrackIds must be an array or null`);
+      }
+      if (item.exemplarTrackIds.length > 8) {
+        throw new Error(`shows[${i}].exemplarTrackIds must be at most 8 entries`);
+      }
+      exemplarTrackIds = item.exemplarTrackIds.map((id: any, ei: number) => {
+        const v = String(id ?? '').trim();
+        if (v.length === 0 || v.length > 64) {
+          throw new Error(`shows[${i}].exemplarTrackIds[${ei}] must be 1-64 chars`);
+        }
+        return v;
+      });
+    }
+    return { id, name, topic, vibe, personaId: item.personaId, moods: item.moods, themeId, excludePatterns, exemplarTrackIds };
   });
 }
 
@@ -2144,6 +2207,9 @@ export function resolveActiveShow(date = new Date(), s = get()) {
     // null = use station-wide picker.excludePatterns; [] = no excludes for
     // this show (e.g. a live-sets hour); [...] = show-specific override list.
     excludePatterns: Array.isArray(show.excludePatterns) ? show.excludePatterns : null,
+    // Empty array = no centroid-based theme gating for this show (today's
+    // flat energy-band behaviour). See music/theme-centroid.ts.
+    exemplarTrackIds: Array.isArray(show.exemplarTrackIds) ? show.exemplarTrackIds : [],
     persona: persona
       ? { id: persona.id, name: persona.name, avatar: persona.avatar || '' }
       : null,
