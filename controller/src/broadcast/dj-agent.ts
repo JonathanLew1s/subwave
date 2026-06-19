@@ -26,6 +26,9 @@ import { buildPickerTools } from '../llm/tools.js';
 import { recordPick } from '../llm/log.js';
 import { withTrace, logEvent } from '../observability/events.js';
 import { recencyWindowsForLibrary } from '../music/recency.js';
+import { config } from '../config.js';
+import { buildMaShortlist } from '../music/ma-candidate-pool.js';
+import * as pickerShadowLog from './picker-shadow-log.js';
 
 // --- Feature 4: DJ-mode mini-runs ------------------------------------------
 // A short, deliberate tempo/key journey across 2-3 consecutive picks. While a
@@ -281,6 +284,47 @@ function agentDeadline(): number {
   return settings.get().llm?.agentTimeoutMs ?? 45000;
 }
 
+// Shadow-mode comparison — computes what the MA composite shortlist would
+// have offered for this track event, and logs it next to whatever the live
+// picker actually chose. Read-only, fire-and-forget, and fully isolated:
+// any failure here is swallowed and logged, never surfaced to the caller,
+// because this must never be able to affect playback.
+async function maybeRunPickerShadow(queue: any, eventCurrent: any) {
+  const picker = settings.get().picker;
+  if (!picker?.maShortlist?.shadowEnabled || config.libraryBackend !== 'ma-api') return;
+  try {
+    const activeShow = settings.resolveActiveShow();
+    const livePick = queue.upcoming?.[0]?.track ?? null;
+    const windows = recencyWindowsForLibrary(library.stats().distinctArtists);
+    const recentIds = queue.recentlyPlayedIds(windows.trackHours);
+    const recentArtists = queue.recentArtistsSince(windows.artistHours);
+    const justPlayedArtists = queue.justPlayedArtistKeys();
+
+    const shortlist = await buildMaShortlist({
+      showMoods: activeShow?.moods ?? [],
+      currentTrack: eventCurrent,
+      recentIds,
+      recentArtists,
+      justPlayedArtists,
+      config: picker.maShortlist,
+    });
+
+    pickerShadowLog.record({
+      t: new Date().toISOString(),
+      show: activeShow?.id ?? null,
+      currentTrackId: eventCurrent?.id ?? null,
+      livePick: livePick ? { id: livePick.id, title: livePick.title, artist: livePick.artist } : null,
+      livePickInShortlist: !!livePick?.id && shortlist.some((e) => e.track.id === livePick.id),
+      shortlist: shortlist.map((e) => ({
+        id: e.track.id, title: e.track.title, artist: e.track.artist, year: e.track.year,
+        slot: e.slot, score: Math.round(e.score * 100) / 100,
+      })),
+    });
+  } catch (err: any) {
+    queue.log?.('error', `picker shadow comparison failed (non-fatal): ${err.message}`);
+  }
+}
+
 export const pickerAgent = defineAgent({
   kind: 'djAgentPick',
   schema: PICK_SCHEMA,
@@ -509,6 +553,7 @@ export async function runTrackEvent(queue, ctx, { wantLink }) {
       try {
         await pickViaAgent(queue, { wantLink, audioWaypoint });
         breakerSuccess();
+        maybeRunPickerShadow(queue, current).catch(() => {});
         return;
       } catch (err) {
         queue.log('error', `DJ agent pick failed: ${err.message} — falling back to pool`);
@@ -516,6 +561,7 @@ export async function runTrackEvent(queue, ctx, { wantLink }) {
       }
     }
     await pickViaPool(queue, ctx, { wantLink, current }, rankTarget, audioWaypoint);
+    maybeRunPickerShadow(queue, current).catch(() => {});
   });
 }
 
