@@ -13,6 +13,7 @@
 import * as library from './library.js';
 import { bpmCompat, keyCompat } from './mix.js';
 import { filterPickerCandidates, artistKey, coreArtistKey } from './recency.js';
+import { gateByCentroid } from './theme-centroid.js';
 
 export interface ShortlistSlotConfig {
   targetSize: number;
@@ -36,6 +37,11 @@ export interface BuildShortlistArgs {
   recentArtists: Set<string>;
   justPlayedArtists: Set<string>;
   config: ShortlistSlotConfig;
+  // Computed once per call by the caller (it needs settings/show context this
+  // module doesn't otherwise touch) via theme-centroid.ts. null/absent =
+  // today's flat energy-band behaviour, fully backward compatible.
+  themeCentroid?: import('./theme-centroid.js').ThemeCentroid | null;
+  themeCentroidConfig?: Pick<import('./theme-centroid.js').ThemeCentroidConfig, 'minPoolSize' | 'maxThreshold'>;
 }
 
 // 0..1 — how close a candidate's energy sits to the show's mood band. Reuses
@@ -97,12 +103,19 @@ function dedupeById(tracks: any[]): any[] {
 }
 
 export async function buildMaShortlist(args: BuildShortlistArgs): Promise<ShortlistEntry[]> {
-  const { showMoods, currentTrack, recentIds, recentArtists, justPlayedArtists, config } = args;
+  const { showMoods, currentTrack, recentIds, recentArtists, justPlayedArtists, config, themeCentroid, themeCentroidConfig } = args;
 
   const moodPoolRaw = showMoods.length ? await library.songsByMoods(showMoods) : [];
-  const moodPool = filterPickerCandidates(dedupeById(moodPoolRaw), {
+  const recencyFiltered = filterPickerCandidates(dedupeById(moodPoolRaw), {
     recentIds, recentArtists, justPlayedArtists, cap: Infinity,
   });
+  // Centroid gate (theme-centroid.ts) — when the show has enough analysed
+  // exemplars, narrow the recency-filtered pool down to the subset close
+  // enough to the show's sound to count as on-brief. Absent a centroid, this
+  // is a no-op: moodPool is exactly what it was before this task.
+  const moodPool = themeCentroid && themeCentroidConfig
+    ? gateByCentroid(recencyFiltered, themeCentroid, themeCentroidConfig).eligible
+    : recencyFiltered;
 
   const usedIds = new Set<string>();
   const entries: ShortlistEntry[] = [];
