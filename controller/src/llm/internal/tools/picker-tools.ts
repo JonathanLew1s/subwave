@@ -162,7 +162,7 @@ export function buildPickerTools({
     return out;
   };
 
-  const collect = (list: any, cap = 8) => {
+  const collect = (list: any, cap = 10) => {
     const out: any[] = [];
     if (briefPool.length) {
       out.push(...acceptInto(shuffle(briefPool), Math.min(BRIEF_RESERVE, cap)));
