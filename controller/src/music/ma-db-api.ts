@@ -206,6 +206,110 @@ export async function getArtistLastfmTags(_id: string, _opts = {}): Promise<stri
   return [];
 }
 
+// ---------------------------------------------------------------------------
+// Fuzzy artist resolution (MA mode)
+// ---------------------------------------------------------------------------
+// Mirrors subsonic.ts's resolveArtist: the sidecar's /search is exact/substring
+// matching only, so a transliteration variance or dropped accent returns zero
+// hits. Reuse the same normalise → exact-match → fuzzy-rank approach against
+// searchArtists, the one artist-lookup endpoint the sidecar actually exposes.
+
+function normArtistName(s: string): string {
+  return String(s || '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // strip diacritics
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]/g, ' ')                       // punctuation → space
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function artistEditDistance(a: string, b: string): number {
+  const m = a.length, n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  let prev = Array.from({ length: n + 1 }, (_, i) => i);
+  let cur = new Array(n + 1);
+  for (let i = 1; i <= m; i++) {
+    cur[0] = i;
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+    }
+    [prev, cur] = [cur, prev];
+  }
+  return prev[n];
+}
+
+function artistSimilarity(a: string, b: string): number {
+  const longer = Math.max(a.length, b.length);
+  if (longer === 0) return 1;
+  return 1 - artistEditDistance(a, b) / longer;
+}
+
+const MA_ARTIST_MATCH_THRESHOLD = 0.82; // same tuning as subsonic.ts
+
+export async function resolveArtist(name: string, { artistCount = 10 } = {}): Promise<any | null> {
+  const query = normArtistName(name);
+  if (!query) return null;
+
+  // 1. Exact hit — fast path for correctly-spelled names.
+  const exact = await searchArtists(name, { artistCount });
+  const direct = exact.find((a: any) => normArtistName(a.name) === query);
+  if (direct) return direct;
+
+  // 2. Relax — the sidecar's /search has no per-token artist index endpoint,
+  //    so retry the same search with each token of the query (still hits the
+  //    same /search route, just with a narrower string).
+  const tokens = query.split(' ').filter((t) => t.length >= 2);
+  const candidates = new Map<string, any>();
+  for (const a of exact) candidates.set(a.id, a);
+  for (const token of tokens) {
+    try {
+      for (const a of await searchArtists(token, { artistCount })) {
+        candidates.set(a.id, a);
+      }
+    } catch {}
+  }
+  if (candidates.size === 0) return null;
+
+  // 3. Fuzzy-rank against the full request, same shared-token guard as subsonic.ts.
+  const queryTokens = new Set(tokens);
+  const requireShared = queryTokens.size >= 2;
+  let best: any = null;
+  let bestScore = 0;
+  for (const a of candidates.values()) {
+    const cand = normArtistName(a.name);
+    if (requireShared && !cand.split(' ').some((t) => queryTokens.has(t))) continue;
+    const score = artistSimilarity(query, cand);
+    if (score > bestScore) { bestScore = score; best = a; }
+  }
+  return bestScore >= MA_ARTIST_MATCH_THRESHOLD ? best : null;
+}
+
+// An artist's most recent releases, newest first. Mirrors subsonic.ts's
+// getRecentSongsByArtist but ranks by `year` only — the sidecar's artist/album
+// payload doesn't carry the precise originalReleaseDate/releaseDate fields
+// Navidrome's OpenSubsonic extension provides, so this is a coarser
+// (year-only) recency signal. Falls back to [] if the artist can't be
+// resolved or has no track listing.
+export async function getRecentSongsByArtist(
+  artistName: string,
+  { albums = 3, count = 20 }: { albums?: number; count?: number } = {},
+): Promise<any[]> {
+  const artist = await resolveArtist(artistName);
+  if (!artist?.id) return [];
+  try {
+    const data = await apiGet(`/artists/${artist.id}/tracks`, {
+      order: 'year',
+      dir: 'desc',
+      limit: Math.max(count, albums * 10), // tracks, not albums — sidecar has no per-artist album listing
+    });
+    return ((data.items ?? []).map(toSong)).slice(0, count);
+  } catch {
+    return [];
+  }
+}
+
 export async function getLyrics(_songId: string): Promise<string> {
   return '';
 }
