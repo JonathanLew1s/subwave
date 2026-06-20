@@ -141,7 +141,7 @@ export function buildSegmentTools(ctx: any, state: any, caps: any[]) {
           // Walk a bounded slice of albums (cheapest viable: top 8 by year/recent).
           // We only need to know whether at least one cold track exists.
           const cold: { title: string; album: string }[] = [];
-          const { getAlbum } = await import('../../../music/subsonic.js');
+          const { getAlbum } = await import('../../../music/library-backend.js');
           for (const album of albums.slice(0, 8)) {
             const songs = await getAlbum(album.id);
             for (const s of songs) {
