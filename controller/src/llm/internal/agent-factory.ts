@@ -18,6 +18,9 @@
 //     optional `extras` blob the caller needs back (the picker's `seen` map,
 //     used to resolve the agent's chosen id to a full song object).
 
+// NOTE: upstream imports djAgent from './strategy/agent.js' (its sdk.ts
+// split). That module doesn't exist on this branch yet — sdk.ts hasn't been
+// split here. Revisit this import when a future task ports that split.
 import { djAgent } from '../sdk.js';
 
 export interface AgentDefinition {
