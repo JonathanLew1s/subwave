@@ -6,10 +6,9 @@
 //   1. Request matching / track picking: structured output (Zod-validated)
 //   2. DJ script generation: free text under a persona system prompt
 
-import { z } from 'zod';
 import * as settings from '../settings.js';
 import * as library from '../music/library.js';
-import { djText, djObject } from './sdk.js';
+import { djText } from './sdk.js';
 import { recentCalls } from './log.js';
 
 // Re-exported so routes/debug.js can read the LLM call ring buffer through the
@@ -330,82 +329,5 @@ export async function generateHourlyTime(time: any, weather: any, { recap = null
   });
 }
 
-// ---------------------------------------------------------------------------
-// LLM PICKER — choose the next track from a candidate pool
-// ---------------------------------------------------------------------------
-
-// Shared selection criteria — used by both the pool picker (pickerSystem
-// below) and the conversational agent picker (pickSystem in broadcast/
-// dj-agent.js) so the two strategies can't drift apart on selection rules.
-export const PICKER_CRITERIA = `Selection criteria, in order:
-1. SHOW BRIEF — if a current show brief is given above, its genre and mood are a hard constraint. Only consider tracks that fit it. A perfect flow transition into the wrong genre is still wrong. Use tracksByMood, tracksByEnergy, tracksLikeThis, searchByLyrics, or searchLibrary to find candidates that actually fit the show.
-2. CONTEXT — does it fit the time of day, weather, and dominant mood?
-3. FLOW — within the show's genre space, does it transition naturally from what just played (energy, tempo)? When a candidate shows a "bpm" and/or Camelot "key", those are MEASURED — prefer a next track whose tempo sits near the current one (or steps it deliberately for the daypart) and whose key is harmonically close. When "pace" (0–1) is present, it is the track's MEASURED perceptual energy decoupled from tempo — use it to shape build/release arcs: avoid stacking two peaks back-to-back, ease down for wind-down dayparts, lift for workout/drive. When "sections" is present, it hints how much the opening develops (higher = busier, evolving intro). Treat all of these as tie-breakers, never hard rules; many tracks won't have them.
-4. VARIETY — never pick the same artist consecutively; don't repeat tracks already played today; rotate energy. Mix well-known tracks with deeper cuts — don't cluster obvious global hits back to back. If recent picks have felt very similar to each other (check the recentSimilarity flag), prefer a briefPool candidate from a different genre or energy stratum — even over a strong similarity match. Variety over cleverness — never pick a track because its title literally matches the time of day, the weather, or anything else literal.
-5. INTEREST — prefer something that creates a moment, not the most generic option.`;
-
-function pickerSystem(show?: { name: string; topic: string } | null, simLine: string = '') {
-  const stationName = settings.get().station;
-  const showLine = show?.topic
-    ? `\n\nCurrent show brief — follow this for every pick:\n${show.topic}`
-    : '';
-  return `You are the DJ for ${stationName}, a personal internet radio station.
-Pick the single best NEXT track from the candidate pool, given recent plays and the current context.${showLine}${simLine}
-
-${PICKER_CRITERIA}
-
-Each candidate carries a "source" tag — a hint about where it came from:
-- similar / similar-artist: flows from what's playing now
-- embedding-similar: closest in mood / lyric / metadata space to what's playing
-- audio-similar: SOUNDS closest to what's playing (timbre, instrumentation, production)
-- audio-journey: SOUNDS like where the set is heading — the next step of a deliberate drift toward a destination vibe, not necessarily the current track
-- recent: newly added to the library
-- frequent / starred / playlist: an established favourite
-- mood-library: matches the room's mood
-- random: a wildcard for breaking a predictable run
-Use it to balance familiarity against discovery. The two *-similar sources may
-carry a "similarity" (0–1, higher = closer) — a high value means a very tight
-match you can lean on for a smooth segue.
-
-recentPlays is context for judging flow — every candidate is already guaranteed
-unplayed, so you never need to reject one for being recent.
-
-Pick exactly one candidate.`;
-}
-
-export async function pickNextTrack({ candidates, recentPlays, context, show = null, recentSimilarity = null }: {
-  candidates: any[];
-  recentPlays: any;
-  context: any;
-  show?: { name: string; topic: string } | null;
-  recentSimilarity?: string | null;
-}) {
-  const user = JSON.stringify({
-    now: {
-      time: context.time?.period,
-      vibe: context.time?.vibe,
-      mood: context.dominantMood,
-      weather: context.weather?.condition,
-      festival: context.festival?.name,
-    },
-    recentPlays,
-    candidates,
-  }, null, 2);
-
-  const simLine = recentSimilarity && show
-    ? `\n\nYour recent picks cluster ${recentSimilarity}-similarity — prefer briefPool diversity.`
-    : '';
-
-  return djObject({
-    system: pickerSystem(show, simLine),
-    prompt: user,
-    schema: z.object({
-      id: z.string().describe('the exact id of one candidate'),
-      reason: z.string().describe('one short sentence on why this one'),
-    }),
-    temperature: 0.5,
-    kind: 'pickNextTrack',
-  });
-}
-
 export { matchRequest, identifyTrackFromText } from './internal/prompts/request.js';
+export { PICKER_CRITERIA, pickNextTrack, showMusicLean } from './internal/prompts/picker.js';
