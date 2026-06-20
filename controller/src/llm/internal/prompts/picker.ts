@@ -9,6 +9,10 @@ import * as settings from '../../../settings.js';
 // split here. Revisit this import when a future task ports that split.
 import { djObject } from '../../sdk.js';
 
+// This list's shape (5 items, SHOW BRIEF first) deliberately diverges from
+// upstream's 4-item FLOW-first list — see showMusicLean below for why genre
+// stays a hard constraint here. On a future merge/rebase, keep this fork's
+// full ordering and wording; don't reconcile it toward upstream's version.
 export const PICKER_CRITERIA = `Selection criteria, in order:
 1. SHOW BRIEF — if a current show brief is given above, its genre and mood are a hard constraint. Only consider tracks that fit it. A perfect flow transition into the wrong genre is still wrong. Use tracksByMood, tracksByEnergy, tracksLikeThis, searchByLyrics, or searchLibrary to find candidates that actually fit the show.
 2. CONTEXT — does it fit the time of day, weather, and dominant mood?
@@ -43,6 +47,8 @@ function pickerSystem(show?: ShowMusic | null, simLine: string = '') {
   const showLine = show?.topic
     ? `\n\nCurrent show brief — follow this for every pick:\n${show.topic}`
     : '';
+  // Order is deliberate: show brief, then the soft decade/energy lean, then the
+  // fork's similarity-cluster nudge last — simLine always trails the others.
   return `You are the DJ for ${stationName}, a personal internet radio station.
 Pick the single best NEXT track from the candidate pool, given recent plays and the current context.${showLine}${showMusicLean(show)}${simLine}
 
