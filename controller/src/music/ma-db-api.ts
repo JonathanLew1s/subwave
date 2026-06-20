@@ -21,7 +21,17 @@ function headers(): Record<string, string> {
   return h;
 }
 
-export async function apiGet<T = any>(path: string, params: Record<string, any> = {}, timeoutMs = 10_000): Promise<T> {
+// Default bumped 10s -> 25s as an immediate stopgap: the sidecar's
+// energy/valence/arousal-filtered queries (songsByMood/songsByMoods, the
+// mood pool backing auto.m3u and the picker) currently measure ~16s against
+// the live cluster as MA's analysis coverage has grown — every call was
+// silently aborting before the server even responded. The real fix is a set
+// of expression indexes added on the sidecar side (music-assistant-db-api);
+// this timeout bump is the immediate unblock while that rolls out, not a
+// replacement for it — leave it generous even after the index fix lands,
+// since this call still crosses two services and a 25s ceiling costs
+// nothing when the common case is sub-second.
+export async function apiGet<T = any>(path: string, params: Record<string, any> = {}, timeoutMs = 25_000): Promise<T> {
   const url = new URL(`${baseUrl()}/api/v1${path}`);
   for (const [k, v] of Object.entries(params)) {
     if (v != null && v !== '') url.searchParams.set(k, String(v));
