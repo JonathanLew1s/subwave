@@ -6,11 +6,11 @@ import { config } from '../config.js';
 import * as settings from '../settings.js';
 
 // POST /onboarding/test-ma — body: { url, apiKey? }. Hits the ma-db-api
-// sidecar's /health endpoint. Non-mutating.
+// sidecar's /health endpoint. Non-mutating. Caller (routes/onboarding.ts)
+// guards the missing-url case with a 400 before reaching here.
 export async function testMaDbApi(url: string, apiKey: string) {
   const cleanUrl = String(url || '').trim().replace(/\/$/, '');
   const cleanKey = String(apiKey || '').trim();
-  if (!cleanUrl) return { ok: false, error: 'url is required' };
 
   try {
     const ctrl = new AbortController();

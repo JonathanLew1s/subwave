@@ -65,7 +65,9 @@ router.get('/onboarding/status', async (req, res) => {
 // Hits the ma-db-api sidecar's /health endpoint. Non-mutating.
 // ---------------------------------------------------------------------------
 router.post('/onboarding/test-ma', requireAdmin, async (req, res) => {
-  res.json(await onboardingMod.testMaDbApi(req.body?.url, req.body?.apiKey));
+  const { url, apiKey } = req.body || {};
+  if (!url) return res.status(400).json({ ok: false, error: 'url is required' });
+  res.json(await onboardingMod.testMaDbApi(url, apiKey));
 });
 
 // ---------------------------------------------------------------------------
