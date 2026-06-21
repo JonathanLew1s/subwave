@@ -49,6 +49,19 @@ export function trackKey(song: CandidateLike): string {
   return `${(song.title || '').toLowerCase().trim()}|${artistKey(song)}`;
 }
 
+// Case-insensitive substring match in either direction — handles both a
+// compound library tag matching a simpler show-genre string ("Hip-Hop"
+// candidate vs. "hip hop" show filter) and the reverse. Used to hard-exclude
+// candidates that don't match a show's pinned genre — unlike mood/energy,
+// which stay soft leans, genre is a hard constraint per this fork's design
+// (see llm/internal/prompts/picker.ts's PICKER_CRITERIA comment).
+export function genreMatches(candidateGenre: string | null | undefined, wanted: string): boolean {
+  if (!candidateGenre || !wanted) return false;
+  const a = candidateGenre.toLowerCase();
+  const b = wanted.toLowerCase();
+  return a.includes(b) || b.includes(a);
+}
+
 export function recencyWindowsForLibrary(distinctArtists: number | null | undefined): RecencyWindows {
   if (!distinctArtists || distinctArtists <= 0) {
     return {

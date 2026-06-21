@@ -11,7 +11,7 @@ import { z } from 'zod';
 import * as subsonic from '../../../music/library-backend.js';
 import * as library from '../../../music/library.js';
 import * as embeddings from '../../../music/embeddings.js';
-import { artistKey, coreArtistKey, filterPickerCandidates } from '../../../music/recency.js';
+import { artistKey, coreArtistKey, filterPickerCandidates, genreMatches } from '../../../music/recency.js';
 import { searchWeb, searchReady } from '../../../skills/web-search.js';
 import { identifyTrackFromText } from '../prompts/request.js';
 
@@ -107,6 +107,7 @@ export function buildPickerTools({
   justPlayedArtists = new Set<string>(),
   maxDurationSec = 600,
   excludePatterns = [] as string[],
+  genreFilter = null as string | null,
   briefPool = [] as any[],
   audioWaypoint = null,
   resolveReferences = false,
@@ -117,6 +118,11 @@ export function buildPickerTools({
   justPlayedArtists?: Set<string>; // core artist key(s) of the current/previous track — never relaxed
   maxDurationSec?: number;
   excludePatterns?: string[];
+  // Hard genre constraint — when set, only candidates whose genre matches
+  // (via genreMatches) survive `acceptInto`'s filter. null/empty = no
+  // constraint. Unlike excludePatterns this is an inclusion test, not an
+  // exclusion list — see acceptInto.
+  genreFilter?: string | null;
   briefPool?: any[];
   // The active sonic journey's current waypoint vector (broadcast/dj-agent.ts).
   // When present, the tracksTowardJourney tool below is registered, closing
@@ -141,7 +147,9 @@ export function buildPickerTools({
   const acceptInto = (list: any, n: number, { relaxArtists = true }: { relaxArtists?: boolean } = {}) => {
     if (n <= 0) return [];
     const withinLength = (list || []).filter((s: any) =>
-      (!s.duration || s.duration <= maxDurationSec) && isRadioPickable(s.title ?? '', s.album, excludePatterns, s.genre));
+      (!s.duration || s.duration <= maxDurationSec)
+      && isRadioPickable(s.title ?? '', s.album, excludePatterns, s.genre)
+      && (!genreFilter || genreMatches(s.genre, genreFilter)));
     const accepted = filterPickerCandidates(shuffle(withinLength as any[]), {
       recentIds,
       recentKeys,

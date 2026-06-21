@@ -288,7 +288,7 @@ export const pickerAgent = defineAgent({
     const activeShow = settings.resolveActiveShow();
     const { maxDurationSec, excludePatterns } = settings.getPickerConfig(activeShow);
     const briefPool = await buildBriefPoolForShow(activeShow, recentIds);
-    const { tools, seen } = buildPickerTools({ recentIds, recentKeys, recentArtists, justPlayedArtists, maxDurationSec, excludePatterns, briefPool, audioWaypoint });
+    const { tools, seen } = buildPickerTools({ recentIds, recentKeys, recentArtists, justPlayedArtists, maxDurationSec, excludePatterns, genreFilter: activeShow?.genre || null, briefPool, audioWaypoint });
     return { tools: filterToolsForShow(tools, activeShow), extras: { seen } };
   },
 });

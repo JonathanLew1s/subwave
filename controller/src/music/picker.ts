@@ -12,7 +12,7 @@ import * as dj from '../llm/dj.js';
 import * as settings from '../settings.js';
 import { isRadioPickable } from '../llm/tools.js';
 import { bpmCompat, keyCompat } from './mix.js';
-import { filterPickerCandidates, recencyWindowsForLibrary, artistKey, coreArtistKey } from './recency.js';
+import { filterPickerCandidates, recencyWindowsForLibrary, artistKey, coreArtistKey, genreMatches } from './recency.js';
 
 const CANDIDATE_CAP = 18;
 const HISTORY_DEPTH = 4;
@@ -455,10 +455,12 @@ export async function pickViaPool(queue, ctx, rankTarget: { bpm: number | null; 
   // to clear all station-wide filters for that hour.
   const { maxDurationSec, excludePatterns } = settings.getPickerConfig(activeShow);
   const filtered = rawCandidates.filter(c =>
-    (!c.duration || c.duration <= maxDurationSec) && isRadioPickable(c.title ?? '', c.album, excludePatterns, c.genre));
+    (!c.duration || c.duration <= maxDurationSec)
+    && isRadioPickable(c.title ?? '', c.album, excludePatterns, c.genre)
+    && (!showFilter?.genre || genreMatches(c.genre, showFilter.genre)));
   const candidates = filtered.length > 0 ? filtered : rawCandidates;
   if (filtered.length < rawCandidates.length) {
-    queue.log('picker', `dropped ${rawCandidates.length - filtered.length} track(s) over ${maxDurationSec / 60}min or matching exclude patterns`);
+    queue.log('picker', `dropped ${rawCandidates.length - filtered.length} track(s) over ${maxDurationSec / 60}min, matching exclude patterns, or off the show's pinned genre`);
   }
 
   if (candidates.length === 0) {
