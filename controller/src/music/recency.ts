@@ -49,17 +49,28 @@ export function trackKey(song: CandidateLike): string {
   return `${(song.title || '').toLowerCase().trim()}|${artistKey(song)}`;
 }
 
-// Case-insensitive substring match in either direction — handles both a
-// compound library tag matching a simpler show-genre string ("Hip-Hop"
-// candidate vs. "hip hop" show filter) and the reverse. Used to hard-exclude
-// candidates that don't match a show's pinned genre — unlike mood/energy,
-// which stay soft leans, genre is a hard constraint per this fork's design
-// (see llm/internal/prompts/picker.ts's PICKER_CRITERIA comment).
+// Normalize for genre comparison: lowercase, hyphens/punctuation to spaces,
+// collapse whitespace. Makes "Hip-Hop" and "hip hop" equal without making
+// unrelated compound genres equal to their substrings.
+function normGenre(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+// Exact match after normalization — deliberately NOT substring containment.
+// Used to hard-exclude candidates that don't match a show's pinned genre —
+// unlike mood/energy, which stay soft leans, genre is a hard constraint per
+// this fork's design (see llm/internal/prompts/picker.ts's PICKER_CRITERIA
+// comment). Substring containment ("pop" matching "k-pop"/"synthpop") was
+// tried first and rejected: short genre tokens are exactly what shows pin
+// AND exactly what collides with unrelated compound genres, which would
+// silently let wrong-genre tracks through — the one failure mode a hard
+// constraint can't afford. Excluding a legitimately-related but differently-
+// tagged track (e.g. "Jazz Fusion" under a "Jazz" show) is the safer failure
+// mode here: it only shrinks the pool, which the existing fallback-to-
+// unfiltered logic at each call site already has to tolerate.
 export function genreMatches(candidateGenre: string | null | undefined, wanted: string): boolean {
   if (!candidateGenre || !wanted) return false;
-  const a = candidateGenre.toLowerCase();
-  const b = wanted.toLowerCase();
-  return a.includes(b) || b.includes(a);
+  return normGenre(candidateGenre) === normGenre(wanted);
 }
 
 export function recencyWindowsForLibrary(distinctArtists: number | null | undefined): RecencyWindows {

@@ -96,9 +96,12 @@ function softRankByCompat(pool: any[], current: { bpm: number | null; key: strin
 
 // --- Show music-steering filters (soft lean) -------------------------------
 // A show can pin a genre, a decade (fromYear/toYear) and an energy band. None
-// of these is ever a hard filter: each prefers matching tracks but falls back
-// to the full set when matches are too thin to fill the pool, so a sparse genre
-// or an un-analysed library never starves the stream.
+// of these is ever a hard filter AT THIS SOURCING STAGE: each prefers matching
+// tracks but falls back to the full set when matches are too thin to fill the
+// pool, so a sparse genre or an un-analysed library never starves the stream.
+// Genre gets a second, real hard-exclude pass downstream in pickViaPool (via
+// genreMatches) after this pool is built — this comment block only describes
+// how candidates get INTO the pool, not what survives to the final pick.
 
 type ShowFilter = { genre?: string; fromYear?: number | null; toYear?: number | null; energy?: string } | null;
 

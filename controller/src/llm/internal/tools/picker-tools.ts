@@ -121,7 +121,14 @@ export function buildPickerTools({
   // Hard genre constraint — when set, only candidates whose genre matches
   // (via genreMatches) survive `acceptInto`'s filter. null/empty = no
   // constraint. Unlike excludePatterns this is an inclusion test, not an
-  // exclusion list — see acceptInto.
+  // exclusion list — see acceptInto. Deliberately NO fallback-to-unfiltered
+  // here if a tool's results all get filtered out (unlike music/picker.ts's
+  // pool path, which falls back to the unfiltered pool since it's the
+  // last-resort fallback and must always return something): the agent has
+  // many other tools plus the brief-pool reserve to draw from, and letting an
+  // empty result through here would mean some calls silently surface
+  // wrong-genre candidates — exactly what this filter exists to prevent. Do
+  // not "fix" this into symmetry with the pool path.
   genreFilter?: string | null;
   briefPool?: any[];
   // The active sonic journey's current waypoint vector (broadcast/dj-agent.ts).
