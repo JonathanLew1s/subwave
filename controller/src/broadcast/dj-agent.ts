@@ -206,12 +206,9 @@ export function pickSystem() {
   // is deliberately excluded from this fork's showMusicLean output — genre
   // stays a HARD constraint here via the show brief text above + the
   // MOOD_AWARE_TOOLS restriction below, not a soft lean like upstream treats
-  // it. See showMusicLean's own comment for the full reasoning.
-  //
-  // NOTE: inert today — the fork's show schema (resolveActiveShow()) has no
-  // genre/fromYear/toYear/energy fields yet, so this always returns ''. Wired
-  // ahead of that schema port (not yet scheduled) so the call site doesn't need
-  // touching again later.
+  // it. See showMusicLean's own comment for the full reasoning. Now live:
+  // resolveActiveShow() carries genre/fromYear/toYear/energy as of the
+  // upstream-sync merge, so this renders real text once a show sets them.
   const musicLean = dj.showMusicLean(activeShow);
   const briefPoolLine = activeShow?.moods?.length
     ? `\n\nSome candidates carry a "source" field of genre, energy, vibe, or eclectic — these were reserved from the show's brief pool specifically to give you on-brief variety beyond whatever your discovery tool returned. Prefer one of these when it fits, especially if your recent picks have felt similar to each other.`
@@ -303,11 +300,18 @@ export const requestAgent = defineAgent({
   timeoutMs: agentDeadline,
   buildSystem: () => requestSystem(),
   // recentArtists deliberately empty — a request for a recently-played artist
-  // must still resolve.
+  // must still resolve. resolveReferences adds the web-backed reference resolver
+  // (request path only; no-op without a search provider) when the operator opts
+  // in via settings.llm.requestWebResolve.
   buildTools: ({ recentIds }) => {
     const activeShow = settings.resolveActiveShow();
     const { maxDurationSec, excludePatterns } = settings.getPickerConfig(activeShow);
-    const { tools, seen } = buildPickerTools({ recentIds, maxDurationSec, excludePatterns });
+    const { tools, seen } = buildPickerTools({
+      recentIds,
+      maxDurationSec,
+      excludePatterns,
+      resolveReferences: settings.get().llm?.requestWebResolve ?? false,
+    });
     return { tools, extras: { seen } };
   },
 });

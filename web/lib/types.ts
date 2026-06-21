@@ -15,6 +15,14 @@ export interface NowPlayingTrack {
   duration?: number;
   subsonic_id?: string;
   ma_id?: string;
+  // Analysis/tag data merged in by the controller's /now-playing handler from
+  // the library DB. All optional — a not-yet-tagged track omits them and the
+  // player's metadata strip renders nothing.
+  genre?: string | null;
+  bpm?: number | null;
+  musicalKey?: string | null;
+  moods?: string[];
+  energy?: 'low' | 'medium' | 'high' | null;
 }
 
 export interface WeatherContext {
@@ -109,6 +117,10 @@ export interface NowPlayingResponse {
   streamOnline?: boolean;
   /** kbps of the first attached broadcast mount; null when offline. */
   streamBitrate?: number | null;
+  /** Cumulative since-boot LLM token total — the player's token ticker. */
+  llmTokens?: number | null;
+  /** Station IANA timezone — render on-air timestamps in it (issue #418). */
+  timezone?: string;
 }
 
 export interface QueueEntry {

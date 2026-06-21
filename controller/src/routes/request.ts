@@ -23,6 +23,30 @@ export const router = express.Router();
 
 const shuffle = (arr) => [...arr].sort(() => Math.random() - 0.5);
 
+// Neutralize prompt-injection markup in listener-supplied request text before
+// it's stored, logged, displayed, or fed to the LLM. A song request is short
+// natural language ("play Diljit latest", "rainy day vibes") — it never legibly
+// contains instruction-shaped markup, so stripping it can't hurt a real request
+// but defangs attempts to smuggle directives to the DJ agent (the raw text is
+// posted verbatim as a session turn and aired as free-text patter). This is a
+// belt — the prompt framing still treats the text as data — not the only layer.
+function sanitizeRequestText(raw: string): string {
+  return String(raw ?? '')
+    // chat/template role + instruction tokens (Llama/Mistral/ChatML style)
+    .replace(/\[\/?INST\]|<<\/?SYS>>|<\|[^|>]*\|>/gi, ' ')
+    // any HTML/XML-ish tag, e.g. <project_instructions> … </project_instructions>
+    .replace(/<\/?[a-z][^>]*>/gi, ' ')
+    // leading role markers that fake a new turn ("system:", "assistant:")
+    .replace(/^[ \t]*(system|assistant|developer)\s*:/gim, ' ')
+    // the unambiguous "ignore/disregard the previous instructions" family
+    .replace(/\b(ignore|disregard|forget|override)\b[^.!?\n]*\b(previous|prior|above|earlier|all)\b[^.!?\n]*\binstructions?\b/gi, ' ')
+    // double quotes would let the text break out of the "${text}" framing
+    .replace(/"/g, "'")
+    // collapse the multi-line "instruction block" shape into one line
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 // ---------------------------------------------------------------------------
 // In-memory request ledger. Each POST /request mints an entry; the background
 // resolver mutates it; GET /request/:id reads it. Ephemeral by design — a
@@ -43,9 +67,11 @@ function pruneRequests() {
 // albums by year, pick a song from the right album. Returns a Subsonic song or null.
 async function pickByArtistAndSort({ artistName, sort, scope: _scope, recentIds }: { artistName: string; sort: string | null; scope: string; recentIds: Set<string> }) {
   try {
-    const artists = await subsonic.searchArtists(artistName, { artistCount: 5 });
-    if (artists.length === 0) return null;
-    const artist = await subsonic.getArtist(artists[0].id);
+    // Fuzzy-resolve so a transliteration variance or typo ("Sikandar" vs the
+    // library's "Sikander") still lands on the right artist instead of failing.
+    const matchedArtist = await subsonic.resolveArtist(artistName);
+    if (!matchedArtist) return null;
+    const artist = await subsonic.getArtist(matchedArtist.id);
     let albums = artist?.album || [];
     if (albums.length === 0) return null;
 
@@ -74,6 +100,36 @@ async function pickByArtistAndSort({ artistName, sort, scope: _scope, recentIds 
   } catch (err) {
     queue.log('error', `pickByArtistAndSort failed: ${err.message}`);
   }
+  return null;
+}
+
+// Fallback for "more like this" when the currently-playing artist has nothing
+// else in the library (e.g. a one-off collab credit) — find a track that
+// actually RESEMBLES the current one. "more like this" means more like the
+// TRACK, not strictly more by the artist, so this honours the request instead
+// of dead-ending. Prefers the audio-similarity extension ("sounds like this"),
+// then the Last.fm similarity graph. Returns a fresh Subsonic song (same shape
+// as pickByArtistAndSort) or null. Excludes the seed track and recent plays.
+async function pickSimilarToTrack(reference, recentIds: Set<string>) {
+  const id = reference?.track?.id;
+  if (!id) return null;
+  const exclude = new Set(recentIds);
+  exclude.add(id); // never return the song that's playing right now
+  const pickFresh = (songs) => {
+    const list = (songs || []).filter((s) => s?.id && !exclude.has(s.id));
+    if (list.length === 0) return null;
+    return list[Math.floor(Math.random() * list.length)];
+  };
+  try {
+    if (await subsonic.supportsSonicSimilarity()) {
+      const pick = pickFresh(await subsonic.getSonicSimilarTracks(id, { count: 25 }));
+      if (pick) return pick;
+    }
+  } catch (err) { queue.log('error', `more-like-this sonic similar failed: ${err.message}`); }
+  try {
+    const pick = pickFresh(await subsonic.getSimilarSongs(id, { count: 25 }));
+    if (pick) return pick;
+  } catch (err) { queue.log('error', `more-like-this similar songs failed: ${err.message}`); }
   return null;
 }
 
@@ -121,6 +177,7 @@ function recordOutcome(entry) {
       genre: entry.genre ?? null,
       language: entry.language ?? null,
       searchTerms: entry.searchTerms ?? null,
+      artistMiss: entry.artistMiss ?? null,
       track: entry.pick
         ? { title: entry.pick.title, artist: entry.pick.artist, id: entry.pick.id }
         : (entry.track || null),
@@ -190,12 +247,23 @@ async function resolveRequest(entry) {
     // Requests stay near-unfiltered — 2h is enough to skip the song still
     // ringing in their ears without blocking a re-request from earlier today.
     const recentIds = queue.recentlyPlayedIds(2);
-    const pick = await pickByArtistAndSort({
+    // Try another track by the same artist first (the cheap, on-the-nose read),
+    // then fall back to real track similarity so a one-off collab credit playing
+    // now doesn't dead-end the request ("Couldn't find more from X in the crates").
+    let pick = await pickByArtistAndSort({
       artistName: refArtist, sort: null, scope: 'song', recentIds,
     });
     if (!pick) {
-      return failed(`Couldn't find more from ${refArtist} in the crates.`);
+      pick = await pickSimilarToTrack(reference, recentIds);
+      if (pick) entry.pickSource = 'more-like-this:similar';
     }
+    if (!pick) {
+      return failed(`Couldn't find anything close to "${reference?.track?.title || refArtist}" in the crates.`);
+    }
+    // The fallback can land on a different artist, so phrase the ack from the
+    // actual pick, not the seed.
+    const sameArtist = !!pick.artist && pick.artist === refArtist;
+    const ackLine = sameArtist ? `More from ${refArtist}, coming up.` : `More like that, coming up.`;
     const introScript = await dj.generateIntro({
       track: pick,
       context: ctx,
@@ -211,13 +279,13 @@ async function resolveRequest(entry) {
     });
     session.appendTurn({
       role: 'dj', kind: 'request',
-      text: introScript || `More from ${refArtist}, coming up.`,
+      text: introScript || ackLine,
       meta: { trackId: pick.id, requester },
     });
     entry.pick = pick;
     entry.introScript = introScript || null;
     return resolved({
-      ack: `More from ${refArtist}, coming up.`,
+      ack: ackLine,
       track: { title: pick.title, artist: pick.artist },
       queuePosition: queue.upcoming.length,
     });
@@ -429,14 +497,41 @@ async function resolveRequest(entry) {
     queue.log('miss', `Nothing matched "${text}"`);
     return failed(`Sorry ${requester}, nothing in the crates matched that.`);
   }
+
+  // Near-miss flag: the listener named an artist but the track we're airing
+  // isn't by them — the cascade couldn't find that artist (even fuzzily) and
+  // fell through to mood/genre/starred filler. We still queue the filler (the
+  // station never refuses), but recording it makes this silent degrade visible
+  // in the request log instead of looking like a clean resolve.
+  if (matched.artist) {
+    const want = matched.artist.toLowerCase().trim();
+    const got = String(pick.artist || '').toLowerCase();
+    const hit = got.includes(want) || want.includes(got)
+      || want.split(/\s+/).some(t => t.length >= 3 && got.includes(t));
+    if (!hit) {
+      entry.artistMiss = matched.artist;
+      queue.log('miss', `Requested artist "${matched.artist}" not in library — airing ${pick.artist} instead`);
+    }
+  }
+
   queue.log('request', `resolved via ${pickSource}: ${pick.title} — ${pick.artist}`);
 
-  // 3. Generate DJ intro that mentions the request
+  // On an artist miss the up-front `ack` (written by matchRequest before the
+  // cascade knew it would miss) is a lie — "Got some Katy Perry coming up!"
+  // over a Daft Punk track. Replace it with an honest stand-in line.
+  const ack = entry.artistMiss
+    ? `No ${entry.artistMiss} in the crates — here's something that fits the moment instead.`
+    : matched.ack;
+
+  // 3. Generate DJ intro that mentions the request. On a miss, pass the
+  // requested-but-absent artist so the spoken intro owns the substitution
+  // instead of pretending the track is by them.
   const introScript = await dj.generateIntro({
     track: pick,
     context: ctx,
     requestedBy: requester,
     requestText: text,
+    artistMiss: entry.artistMiss || null,
     recap: queue.getDjRecap(),
     recentTracks: queue.getRecentTracks(),
     recentOpeners: queue.getRecentOpeners(),
@@ -452,7 +547,7 @@ async function resolveRequest(entry) {
   });
   session.appendTurn({
     role: 'dj', kind: 'request',
-    text: introScript || matched.ack || `Queued "${pick.title}".`,
+    text: introScript || ack || `Queued "${pick.title}".`,
     meta: { trackId: pick.id, requester },
   });
 
@@ -460,7 +555,7 @@ async function resolveRequest(entry) {
   entry.pickSource = pickSource;
   entry.introScript = introScript || null;
   return resolved({
-    ack: matched.ack,
+    ack,
     track: { title: pick.title, artist: pick.artist },
     queuePosition: queue.upcoming.length,
   });
@@ -489,7 +584,7 @@ router.post('/request', async (req, res) => {
 
   const rawText = typeof req.body?.text === 'string' ? req.body.text : '';
   const rawName = typeof req.body?.name === 'string' ? req.body.name : '';
-  const text = rawText.trim().slice(0, REQUEST_TEXT_MAX);
+  const text = sanitizeRequestText(rawText).slice(0, REQUEST_TEXT_MAX);
   if (!text) {
     return res.status(400).json({ error: 'Empty request' });
   }

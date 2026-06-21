@@ -3,10 +3,7 @@
 
 import { z } from 'zod';
 import * as settings from '../../../settings.js';
-// NOTE: upstream imports djObject from '../strategy/object.js' (its sdk.ts
-// split). That module doesn't exist on this branch yet — sdk.ts hasn't been
-// split here. Revisit this import when a future task ports that split.
-import { djObject } from '../../sdk.js';
+import { djObject } from '../strategy/object.js';
 
 const REQUEST_SYSTEM = `You are the music librarian for a personal Navidrome library that runs an AI radio station. A listener sends a request; you turn it into structured search parameters.
 

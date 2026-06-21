@@ -12,10 +12,11 @@ type TaggerState = {
   pid: number | null;
   lastLog: string[];
   // Which script the live child is: 'tag' (tag-library), 'analyze' (the
-  // acoustic/audio-embedding pass via analyze-library), or 'sync-ma' (the
-  // Music Assistant DB sync). Single-flight across all — they contend on
-  // the same library DB.
-  mode: 'tag' | 'analyze' | 'sync-ma' | null;
+  // acoustic/audio-embedding pass via analyze-library), 'sync-ma' (the Music
+  // Assistant DB sync), or 'reconcile' (the tag-library --reconcile-only
+  // walk+prune). Single-flight across all four — they contend on the same
+  // library DB and analysis backend.
+  mode: 'tag' | 'analyze' | 'sync-ma' | 'reconcile' | null;
   // Latest structured progress sentinel from the child ([progress] lines on
   // stdout — see music/tagger-progress.ts). Left in place after exit so the
   // last payload doubles as a what-just-finished summary; the UI gates its
@@ -87,8 +88,16 @@ export function startAnalyzer(opts: { limit?: number; audio?: boolean } = {}) {
   spawnChild('analyze', args, detail);
 }
 
-function spawnChild(mode: 'tag' | 'analyze' | 'sync-ma', args: string[], detail: string) {
-  const label = mode === 'tag' ? 'tagger' : 'analyzer';
+// Spawn the standalone reconcile pass: walk Navidrome and prune library rows
+// for tracks it no longer contains. No embeddings, no LLM — the cheap "clear
+// orphaned entries" path behind the admin "Reconcile with Navidrome" button.
+// Same single-flight slot as the tagger/analyzer; caller rejects when running.
+export function startReconcile() {
+  spawnChild('reconcile', ['src/music/tag-library.ts', '--reconcile-only'], '');
+}
+
+function spawnChild(mode: 'tag' | 'analyze' | 'sync-ma' | 'reconcile', args: string[], detail: string) {
+  const label = mode === 'tag' ? 'tagger' : mode === 'analyze' ? 'analyzer' : mode === 'sync-ma' ? 'ma-sync' : 'reconcile';
   const child = spawn('npx', ['tsx', ...args], { cwd: '/app', detached: false });
   activeChild = child;
   tagger.running = true;

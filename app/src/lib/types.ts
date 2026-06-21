@@ -14,6 +14,14 @@ export interface NowPlayingTrack {
   year?: number;
   duration?: number;
   subsonic_id?: string;
+  // Analysis/tag data merged in by the controller's /now-playing handler from
+  // the library DB. All optional — a not-yet-tagged track omits them and the
+  // player's metadata strip renders nothing.
+  genre?: string | null;
+  bpm?: number | null;
+  musicalKey?: string | null;
+  moods?: string[];
+  energy?: 'low' | 'medium' | 'high' | null;
 }
 
 export interface WeatherContext {
@@ -101,6 +109,9 @@ export interface NowPlayingResponse {
   activeShow?: ActiveShow | null;
   listeners?: ListenerCount | number;
   streamOnline?: boolean;
+  /** Station IANA timezone — render on-air timestamps in it so they match what
+   *  the DJ speaks, regardless of the device's own timezone (issue #418). */
+  timezone?: string;
 }
 
 export interface QueueEntry {

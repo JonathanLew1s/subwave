@@ -2605,8 +2605,13 @@ body::after {
     color: #fff;
     opacity: 1;
 }
-.admin-root .shell-nav .nav-foot {
+/* External links (Manual / app stores) sit at the bottom of the rail, grouped
+   with the foot — margin-top:auto absorbs the free space so the group and the
+   footer hug the bottom. .nav-section gives them the tight 3px intra-group gap. */
+.admin-root .shell-nav .nav-ext {
     margin-top: auto;
+}
+.admin-root .shell-nav .nav-foot {
     padding-top: 14px;
     border-top: 1px dashed var(--separator-strong);
     font-size: 10px;
@@ -3855,6 +3860,11 @@ body::after {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
     gap: clamp(24px, 3vw, 44px);
+}
+.bs-stations-report {
+    margin: clamp(32px, 5vw, 56px) 0 0;
+    font-size: 13px;
+    color: var(--muted);
 }
 .bs-station-card {
     display: flex;

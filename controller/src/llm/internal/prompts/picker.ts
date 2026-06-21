@@ -4,10 +4,7 @@
 
 import { z } from 'zod';
 import * as settings from '../../../settings.js';
-// NOTE: upstream imports djObject from '../strategy/object.js' (its sdk.ts
-// split). That module doesn't exist on this branch yet — sdk.ts hasn't been
-// split here. Revisit this import when a future task ports that split.
-import { djObject } from '../../sdk.js';
+import { djObject } from '../strategy/object.js';
 
 // This list's shape (5 items, SHOW BRIEF first) deliberately diverges from
 // upstream's 4-item FLOW-first list — see showMusicLean below for why genre
