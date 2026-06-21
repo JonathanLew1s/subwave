@@ -16,7 +16,6 @@ import * as settings from '../settings.js';
 import * as session from './session.js';
 import * as picker from '../music/picker.js';
 import * as library from '../music/library.js';
-import * as pool from '../music/pool.js';
 import * as mix from '../music/mix.js';
 import * as journey from '../music/journey.js';
 import * as dj from '../llm/dj.js';
@@ -26,10 +25,7 @@ import { buildPickerTools } from '../llm/tools.js';
 import { recordPick } from '../llm/log.js';
 import { withTrace, logEvent } from '../observability/events.js';
 import { recencyWindowsForLibrary } from '../music/recency.js';
-import { config } from '../config.js';
-import { buildMaShortlist } from '../music/ma-candidate-pool.js';
-import { computeThemeCentroid } from '../music/theme-centroid.js';
-import * as pickerShadowLog from './picker-shadow-log.js';
+import { buildBriefPoolForShow, filterToolsForShow, maybeRunPickerShadow } from './dj-agent-mod.js';
 
 // --- Feature 4: DJ-mode mini-runs ------------------------------------------
 // A short, deliberate tempo/key journey across 2-3 consecutive picks. While a
@@ -206,12 +202,18 @@ export function pickSystem() {
   const showLine = activeShow?.topic
     ? `\n\nCurrent show brief — follow this for every pick:\n${activeShow.topic}`
     : '';
+  // Upstream's soft decade/energy lean (llm/internal/prompts/picker.ts). Genre
+  // is deliberately excluded from this fork's showMusicLean output — genre
+  // stays a HARD constraint here via the show brief text above + the
+  // MOOD_AWARE_TOOLS restriction below, not a soft lean like upstream treats
+  // it. See showMusicLean's own comment for the full reasoning.
+  const musicLean = dj.showMusicLean(activeShow);
   const briefPoolLine = activeShow?.moods?.length
     ? `\n\nSome candidates carry a "source" field of genre, energy, vibe, or eclectic — these were reserved from the show's brief pool specifically to give you on-brief variety beyond whatever your discovery tool returned. Prefer one of these when it fits, especially if your recent picks have felt similar to each other.`
     : '';
   return `${settings.agentPersonaPreamble(persona, { rules: false })}
 
-You run the station as one continuous shift. The messages above are the live session.${djModeLine}${showLine}${briefPoolLine}
+You run the station as one continuous shift. The messages above are the live session.${djModeLine}${showLine}${musicLean}${briefPoolLine}
 
 ${dj.PICKER_CRITERIA}`;
 }
@@ -221,19 +223,6 @@ function requestSystem() {
 
 The messages above are the live session — the last user turn is a listener request.`;
 }
-
-// With a show brief active, the picker gets exactly one discovery call
-// (COMMIT_AFTER_STEPS in sdk.js) and PICKER_CRITERIA #1 makes the brief's
-// genre/mood a hard constraint — but several discovery tools carry no
-// mood/genre signal at all (similarSongs is seed-similarity, topSongsByArtist
-// is a discography lookup, recentlyAdded/starredSongs/randomSongs are blind
-// library samples). If the model's one shot lands on one of those, the whole
-// candidate pool can be off-brief regardless of how well the prompt is
-// written — there's nothing on-brief in it to choose. Restrict step-0 tools
-// to the mood/genre-aware set whenever a brief is active; the agent always
-// has tools that can return brief-fitting candidates. No restriction when no
-// show is active (general rotation can use the full toolset).
-const MOOD_AWARE_TOOLS = ['searchLibrary', 'tracksByMood', 'tracksByEnergy', 'tracksLikeThis', 'searchByLyrics'];
 
 // --- Agent circuit breaker ---------------------------------------------------
 // A model that can't drive the done-tool harness — ignores toolChoice and
@@ -285,57 +274,6 @@ function agentDeadline(): number {
   return settings.get().llm?.agentTimeoutMs ?? 45000;
 }
 
-// Shadow-mode comparison — computes what the MA composite shortlist would
-// have offered for this track event, and logs it next to whatever the live
-// picker actually chose. Read-only, fire-and-forget, and fully isolated:
-// any failure here is swallowed and logged, never surfaced to the caller,
-// because this must never be able to affect playback.
-async function maybeRunPickerShadow(queue: any, eventCurrent: any) {
-  const picker = settings.get().picker;
-  if (!picker?.maShortlist?.shadowEnabled || config.libraryBackend !== 'ma-api') return;
-  try {
-    const activeShow = settings.resolveActiveShow();
-    const livePick = queue.upcoming?.[0]?.track ?? null;
-    const windows = recencyWindowsForLibrary(library.stats().distinctArtists);
-    const recentIds = queue.recentlyPlayedIds(windows.trackHours);
-    const recentArtists = queue.recentArtistsSince(windows.artistHours);
-    const justPlayedArtists = queue.justPlayedArtistKeys();
-
-    // null when the show has no exemplars (or too few analysed ones) —
-    // buildMaShortlist treats that as "no gating", same as before this task.
-    const themeCentroid = activeShow?.exemplarTrackIds?.length
-      ? await computeThemeCentroid(activeShow.exemplarTrackIds, picker.maShortlist.themeCentroid)
-      : null;
-
-    const shortlist = await buildMaShortlist({
-      showMoods: activeShow?.moods ?? [],
-      currentTrack: eventCurrent,
-      recentIds,
-      recentArtists,
-      justPlayedArtists,
-      config: picker.maShortlist,
-      themeCentroid,
-      themeCentroidConfig: picker.maShortlist.themeCentroid,
-    });
-
-    pickerShadowLog.record({
-      kind: 'live-pick',
-      t: new Date().toISOString(),
-      show: activeShow?.id ?? null,
-      currentTrackId: eventCurrent?.id ?? null,
-      themeCentroidExemplars: themeCentroid?.exemplarCount ?? null,
-      livePick: livePick ? { id: livePick.id, title: livePick.title, artist: livePick.artist } : null,
-      livePickInShortlist: !!livePick?.id && shortlist.some((e) => e.track.id === livePick.id),
-      shortlist: shortlist.map((e) => ({
-        id: e.track.id, title: e.track.title, artist: e.track.artist, year: e.track.year,
-        slot: e.slot, score: Math.round(e.score * 100) / 100,
-      })),
-    });
-  } catch (err: any) {
-    queue.log?.('error', `picker shadow comparison failed (non-fatal): ${err.message}`);
-  }
-}
-
 export const pickerAgent = defineAgent({
   kind: 'djAgentPick',
   schema: PICK_SCHEMA,
@@ -347,24 +285,9 @@ export const pickerAgent = defineAgent({
   buildTools: async ({ recentIds, recentKeys, recentArtists, justPlayedArtists, audioWaypoint }) => {
     const activeShow = settings.resolveActiveShow();
     const { maxDurationSec, excludePatterns } = settings.getPickerConfig(activeShow);
-    let briefPool: any[] = [];
-    if (activeShow?.moods?.length) {
-      const built = await pool.buildBriefPool({
-        moods: activeShow.moods,
-        vibeText: activeShow.vibe,
-        showId: activeShow.id,
-        recentTrackIds: recentIds,
-      });
-      briefPool = built.tracks;
-    }
+    const briefPool = await buildBriefPoolForShow(activeShow, recentIds);
     const { tools, seen } = buildPickerTools({ recentIds, recentKeys, recentArtists, justPlayedArtists, maxDurationSec, excludePatterns, briefPool, audioWaypoint });
-    if (activeShow?.topic) {
-      const filtered = Object.fromEntries(
-        Object.entries(tools).filter(([name]) => MOOD_AWARE_TOOLS.includes(name) || name === 'tracksTowardJourney'),
-      );
-      return { tools: filtered, extras: { seen } };
-    }
-    return { tools, extras: { seen } };
+    return { tools: filterToolsForShow(tools, activeShow), extras: { seen } };
   },
 });
 
