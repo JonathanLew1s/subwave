@@ -62,10 +62,11 @@ interface Show {
   /** null = inherit station-wide excludePatterns; [] = no filters for this
    *  show; [...] = this show's own replacement list. */
   excludePatterns: string[] | null;
-  /** Optional music-steering filters — soft lean applied at pick time. Empty
-   *  string / null means "no constraint". Genre is free text resolved fuzzily
-   *  against the library; fromYear/toYear are a decade window; energy is one of
-   *  low|medium|high. */
+  /** Optional music-steering filters applied at pick time. Empty string / null
+   *  means "no constraint". Genre is free text resolved fuzzily against the
+   *  library and, unlike the others, is a HARD constraint — only matching
+   *  tracks are considered. fromYear/toYear are a decade window and energy is
+   *  one of low|medium|high; both are soft leans the DJ can break for flow. */
   genre: string;
   fromYear: number | null;
   toYear: number | null;
@@ -849,7 +850,7 @@ export default function ShowsPanel() {
 
             <div className="stack-mobile grid grid-cols-[1.2fr_1fr_1fr] gap-3">
               <Field>
-                <Label htmlFor="show-genre">genre lean</Label>
+                <Label htmlFor="show-genre">genre</Label>
                 <Input
                   id="show-genre"
                   type="text" value={draft.genre} maxLength={64}
@@ -899,9 +900,10 @@ export default function ShowsPanel() {
               </Field>
             </div>
             <span className="field-hint -mt-1.5">
-              Optional soft music steer for this show — a genre, an era, an energy
-              band, or any mix. The DJ leans toward these but can break them for
-              flow; leave blank to let the topic and mood drive selection.
+              Optional music steer for this show. Genre, when set, is a hard
+              constraint — only tracks matching it are considered. Era and energy
+              are soft leans the DJ can break for flow. Leave all blank to let the
+              topic and mood drive selection.
             </span>
 
             <Field>
