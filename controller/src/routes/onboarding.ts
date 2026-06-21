@@ -25,6 +25,7 @@ import { createOpenRouter } from '@openrouter/ai-sdk-provider';
 import { requireAdmin } from '../middleware/auth.js';
 import { config } from '../config.js';
 import * as settings from '../settings.js';
+import * as onboardingMod from './onboarding-mod.js';
 import * as jingles from '../broadcast/jingles.js';
 import { queue } from '../broadcast/queue.js';
 import { refreshAutoPlaylist } from '../broadcast/scheduler.js';
@@ -64,23 +65,7 @@ router.get('/onboarding/status', async (req, res) => {
 // Hits the ma-db-api sidecar's /health endpoint. Non-mutating.
 // ---------------------------------------------------------------------------
 router.post('/onboarding/test-ma', requireAdmin, async (req, res) => {
-  const url = String(req.body?.url || '').trim().replace(/\/$/, '');
-  const apiKey = String(req.body?.apiKey || '').trim();
-  if (!url) return res.status(400).json({ ok: false, error: 'url is required' });
-
-  try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 5000);
-    const headers: Record<string, string> = {};
-    if (apiKey) headers['X-API-Key'] = apiKey;
-    const r = await fetch(`${url}/health`, { headers, signal: ctrl.signal });
-    clearTimeout(timer);
-    if (!r.ok) return res.json({ ok: false, error: `MA DB API returned HTTP ${r.status}` });
-    const body: any = await r.json().catch(() => ({}));
-    res.json({ ok: true, version: body?.version || 'ok' });
-  } catch (err: any) {
-    res.json({ ok: false, error: err.message || 'MA DB API unreachable' });
-  }
+  res.json(await onboardingMod.testMaDbApi(req.body?.url, req.body?.apiKey));
 });
 
 // ---------------------------------------------------------------------------
@@ -208,13 +193,7 @@ router.post('/onboarding/save', requireAdmin, async (req, res) => {
   try {
     // MA DB API backend — apply URL + key to live config and persist via settings.
     if (b.maDbApi && typeof b.maDbApi === 'object') {
-      const maUrl = String(b.maDbApi.url || '').trim().replace(/\/$/, '');
-      const maKey = String(b.maDbApi.apiKey || '').trim();
-      if (maUrl) config.maDbApi.url = maUrl;
-      if (maKey) config.maDbApi.apiKey = maKey;
-      // Persist to settings.json so the controller picks them up on restart.
-      await settings.update({ library: { backend: 'ma-api', maDbApi: { url: maUrl, apiKey: maKey, musicRoot: config.maDbApi.musicRoot } } });
-      config.libraryBackend = 'ma-api';
+      await onboardingMod.saveMaDbApi(b.maDbApi);
     }
 
     // Navidrome — only the wizard-managed overlay; never mutate the live env.
