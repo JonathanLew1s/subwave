@@ -18,6 +18,7 @@ import * as sqliteVec from 'sqlite-vec';
 import { readFile, rename } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { STATE_DIR } from '../config.js';
+import * as mod from './library-db-mod.js';
 
 const DB_PATH = `${STATE_DIR}/library.db`;
 const LEGACY_MOODS_JSON = `${STATE_DIR}/moods.json`;
@@ -258,7 +259,9 @@ export function isOpen(): boolean {
   return db !== null;
 }
 
-function requireDb(): Database.Database {
+// Exported (not just used internally) so library-db-mod.ts can reach the
+// singleton handle without duplicating the open-check.
+export function requireDb(): Database.Database {
   if (!db) throw new Error('library-db not opened — call open() first');
   return db;
 }
@@ -658,69 +661,9 @@ export function upsertTrackMeta(id: string, meta: TrackMeta): void {
 }
 
 // Upsert a track row that came from the Music Assistant sync script.
-// The `id` key is "ma-{ma_item_id}" for MA-backend installs so it is stable
-// across MA rescans (MA reuses item_ids for delta sync).
-// Acoustic fields are written on first encounter and updated only when the
-// MA row has newer data (identified by non-null values from the sync query).
-export function upsertFromMASync(id: string, data: {
-  maItemId: number;
-  title?: string | null;
-  artist?: string | null;
-  album?: string | null;
-  year?: number | null;
-  genre?: string | null;
-  duration?: number | null;
-  loudnessLufs?: number | null;
-  bpm?: number | null;
-  musicalKey?: string | null;
-  beatsJson?: string | null;
-  paceJson?: string | null;
-  popularitySong?: number | null;
-  popularityAlbum?: number | null;
-}): void {
-  requireDb()
-    .prepare(
-      `
-      INSERT INTO tracks (
-        id, ma_item_id, title, artist, album, year, genre, duration_sec,
-        loudness_lufs, bpm, musical_key, beats_json, pace_json,
-        popularity_song, popularity_album
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET
-        ma_item_id      = excluded.ma_item_id,
-        title           = COALESCE(excluded.title, tracks.title),
-        artist          = COALESCE(excluded.artist, tracks.artist),
-        album           = COALESCE(excluded.album, tracks.album),
-        year            = COALESCE(excluded.year, tracks.year),
-        genre           = COALESCE(excluded.genre, tracks.genre),
-        duration_sec    = COALESCE(excluded.duration_sec, tracks.duration_sec),
-        loudness_lufs   = COALESCE(excluded.loudness_lufs, tracks.loudness_lufs),
-        bpm             = COALESCE(excluded.bpm, tracks.bpm),
-        musical_key     = COALESCE(excluded.musical_key, tracks.musical_key),
-        beats_json      = COALESCE(excluded.beats_json, tracks.beats_json),
-        pace_json       = COALESCE(excluded.pace_json, tracks.pace_json),
-        popularity_song  = COALESCE(excluded.popularity_song, tracks.popularity_song),
-        popularity_album = COALESCE(excluded.popularity_album, tracks.popularity_album)
-      `,
-    )
-    .run(
-      id,
-      data.maItemId,
-      data.title ?? null,
-      data.artist ?? null,
-      data.album ?? null,
-      normaliseYear(data.year),
-      data.genre ?? null,
-      Number.isFinite(data.duration as number) ? data.duration : null,
-      Number.isFinite(data.loudnessLufs as number) ? data.loudnessLufs : null,
-      Number.isFinite(data.bpm as number) ? data.bpm : null,
-      data.musicalKey ?? null,
-      data.beatsJson ?? null,
-      data.paceJson ?? null,
-      Number.isFinite(data.popularitySong as number) ? data.popularitySong : null,
-      Number.isFinite(data.popularityAlbum as number) ? data.popularityAlbum : null,
-    );
+// Fork-specific — see library-db-mod.ts.
+export function upsertFromMASync(id: string, data: mod.MASyncData): void {
+  return mod.upsertFromMASync(id, data);
 }
 
 export function upsertTrackEnrichment(id: string, enrich: TrackEnrichment): void {
@@ -844,12 +787,9 @@ export function upsertTrackAnalysis(id: string, a: TrackAnalysisWrite): void {
     );
 }
 
-export function setPopularity(id: string, popularity: { song: number | null; album: number | null }) {
-  if (!db) throw new Error('database not open');
-  const stmt = db.prepare(
-    'UPDATE tracks SET popularity_song = ?, popularity_album = ? WHERE id = ?'
-  );
-  stmt.run(popularity.song, popularity.album, id);
+// Fork-specific — see library-db-mod.ts.
+export function setPopularity(id: string, popularity: { song: number | null; album: number | null }): void {
+  return mod.setPopularity(id, popularity);
 }
 
 // Ids that still need acoustic analysis: never analysed, or analysed by an
@@ -1498,7 +1438,8 @@ function safeParseArray(s: string): string[] {
   }
 }
 
-function normaliseYear(y: unknown): number | null {
+// Exported so library-db-mod.ts can reuse the same year-coercion logic.
+export function normaliseYear(y: unknown): number | null {
   if (y == null) return null;
   if (typeof y === 'number' && Number.isFinite(y)) return Math.trunc(y);
   if (typeof y === 'string') {
@@ -1508,15 +1449,7 @@ function normaliseYear(y: unknown): number | null {
   return null;
 }
 
-// Cosine similarity of two float vectors. Returns [−1, 1]; higher = more similar.
+// Fork-specific — see library-db-mod.ts.
 export function cosineSimilarity(a: Float32Array | number[] | null, b: Float32Array | number[] | null): number {
-  if (!a || !b || a.length !== b.length) return 0;
-  let dot = 0, magA = 0, magB = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    magA += a[i] * a[i];
-    magB += b[i] * b[i];
-  }
-  const denom = Math.sqrt(magA) * Math.sqrt(magB);
-  return denom > 0 ? dot / denom : 0;
+  return mod.cosineSimilarity(a, b);
 }
