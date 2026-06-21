@@ -32,7 +32,7 @@ import { config } from '../config.js';
 import { loadSecretsIntoEnv } from '../setup/secrets.js';
 import { loadSetupConfig } from '../setup/config.js';
 import { activeModelLabel, primaryLeg, fallbackLeg, probeLegReachable } from '../llm/provider.js';
-import { isUnreachable } from '../llm/sdk.js';
+import { isUnreachable, isQuotaOrAuthError } from '../llm/sdk.js';
 import { tagBatch, tagOne, TAGGER_BATCH_SYSTEM, type TagResult } from './tagger-core.js';
 import { runAnalysisPass } from './analyze.js';
 import { reportProgress } from './tagger-progress.js';
@@ -67,6 +67,7 @@ interface CliFlags {
   upgrade: boolean;
   skipAnalyze: boolean;
   reAnalyze: boolean;
+  reconcileOnly: boolean;
 }
 
 function parseFlags(): CliFlags {
@@ -87,7 +88,67 @@ function parseFlags(): CliFlags {
     upgrade: args.includes('--upgrade'),
     skipAnalyze: args.includes('--skip-analyze'),
     reAnalyze: args.includes('--re-analyze'),
+    // Walk Navidrome and prune library rows for tracks it no longer contains,
+    // then exit — no embeddings, no LLM. The admin "Reconcile with Navidrome"
+    // button drives this so orphaned entries can be cleared without paying for
+    // a full tag/analyze pass (works even at 100% coverage).
+    reconcileOnly: args.includes('--reconcile-only'),
   };
+}
+
+// Walk the entire Navidrome catalogue, upserting each song's metadata into the
+// tracks table and collecting the live id set. Shared by the full tagger run
+// (Phase A) and the standalone --reconcile-only path. Cheap: metadata only, no
+// embeddings or LLM calls.
+async function walkNavidrome(): Promise<{ walked: number; liveIds: Set<string> }> {
+  reportProgress({ phase: 'walk', label: 'Scanning music library', done: 0 });
+  let walked = 0;
+  const liveIds = new Set<string>();
+  for await (const song of subsonic.iterateAllSongs()) {
+    db.upsertTrackMeta(song.id, {
+      title: song.title,
+      artist: song.artist,
+      album: song.album,
+      year: song.year,
+      genre: song.genre,
+      duration: song.duration,
+      path: (song as any).path ?? null,
+    });
+    liveIds.add(song.id);
+    walked += 1;
+    if (walked % 500 === 0) {
+      console.log(`[tag] walked ${walked} tracks`);
+      reportProgress({ phase: 'walk', label: 'Scanning music library', done: walked });
+    }
+  }
+  console.log(`[tag] walked ${walked} total tracks`);
+  return { walked, liveIds };
+}
+
+// Standalone reconcile: diff library-db against the live Navidrome catalogue and
+// drop rows (and their vectors) for tracks that are gone. No embedding preflight
+// and no LLM — opens the existing DB at its stored dim so vectors are untouched.
+async function reconcileOnly() {
+  await db.open({ embeddingDim: embeddings.resolveEmbeddingDim(), adoptStoredDim: true });
+  console.log('[tag] reconcile-only: walking Navidrome to prune orphaned rows');
+  const { walked, liveIds } = await walkNavidrome();
+  let pruned = 0;
+  if (walked > 0) {
+    pruned = db.pruneMissingTracks(liveIds);
+    console.log(`[tag] reconcile pruned ${pruned} orphaned tracks no longer in Navidrome`);
+  } else {
+    // A transient empty Navidrome response must never wipe the DB.
+    console.warn('[tag] reconcile: Navidrome returned 0 tracks — skipping prune');
+  }
+  reportProgress({
+    phase: 'done',
+    label: pruned > 0
+      ? `Removed ${pruned} track${pruned === 1 ? '' : 's'} no longer in Navidrome`
+      : 'Library is in sync with Navidrome',
+    done: pruned,
+  });
+  console.log(`[tag] reconcile complete (walked ${walked}, pruned ${pruned})`);
+  process.exit(0);
 }
 
 // Mirrors server.ts boot: cloud API keys from secrets.env, Navidrome creds
@@ -123,6 +184,13 @@ async function main() {
 
   await applyWizardOverlay();
   await settings.load();
+
+  // Reconcile is a pure catalogue diff — short-circuit before any embedding /
+  // LLM setup so it runs even when embeddings are disabled or unconfigured.
+  if (flags.reconcileOnly) {
+    await reconcileOnly();
+    return;
+  }
 
   if (!embeddings.isAvailable()) {
     console.error('[tag] embeddings not available — set settings.embedding.enabled / provider');
@@ -189,27 +257,7 @@ async function main() {
   // Cheap; ensures every Navidrome song is in the tracks table so subsequent
   // phases can operate purely off SQL.
   console.log('[tag] walking music library...');
-  reportProgress({ phase: 'walk', label: 'Scanning music library', done: 0 });
-  let walked = 0;
-  const liveIds = new Set<string>();
-  for await (const song of subsonic.iterateAllSongs()) {
-    db.upsertTrackMeta(song.id, {
-      title: song.title,
-      artist: song.artist,
-      album: song.album,
-      year: song.year,
-      genre: song.genre,
-      duration: song.duration,
-      path: (song as any).path ?? null,
-    });
-    liveIds.add(song.id);
-    walked += 1;
-    if (walked % 500 === 0) {
-      console.log(`[tag] walked ${walked} tracks`);
-      reportProgress({ phase: 'walk', label: 'Scanning Navidrome library', done: walked });
-    }
-  }
-  console.log(`[tag] walked ${walked} total tracks`);
+  const { walked, liveIds } = await walkNavidrome();
 
   // Reconcile against the live catalogue. The walk above is complete and
   // authoritative, so any track row it didn't see is gone from Navidrome
@@ -635,10 +683,12 @@ async function processBatch(
     results = await tagBatch(input, opts);
     state.callCount += 1;
   } catch (err: any) {
-    // A pinned leg whose host went down: rethrow BEFORE the per-track salvage,
-    // otherwise we'd grind 25 serial connect-timeouts against a dead box. The
-    // surviving consumer redoes the requeued batch.
-    if (consumer.pin && isUnreachable(err)) throw err;
+    // A pinned leg that can't recover this run — host down, OR a
+    // quota/usage-limit/auth rejection (#438): rethrow BEFORE the per-track
+    // salvage, otherwise we'd grind 25 serial connect-timeouts (or 25 identical
+    // 429s) against a leg that won't answer. The surviving consumer redoes the
+    // requeued batch.
+    if (consumer.pin && (isUnreachable(err) || isQuotaOrAuthError(err))) throw err;
     console.error(
       `[tag] LLM batch failed (${songs.length} tracks) on ${consumer.label}: ${err.message} — falling back to per-track`,
     );
@@ -648,8 +698,9 @@ async function processBatch(
         results.push(await tagOne(song, opts));
         state.callCount += 1;
       } catch (oneErr: any) {
-        // Host died mid-salvage — bail the whole batch (nothing upserted yet).
-        if (consumer.pin && isUnreachable(oneErr)) throw oneErr;
+        // Leg unusable mid-salvage (host died, or quota/auth) — bail the whole
+        // batch (nothing upserted yet).
+        if (consumer.pin && (isUnreachable(oneErr) || isQuotaOrAuthError(oneErr))) throw oneErr;
         console.error(`[tag] per-track tag failed on ${consumer.label}: ${oneErr.message}`);
         results.push(null);
       }

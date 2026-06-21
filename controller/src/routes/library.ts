@@ -14,9 +14,9 @@ import { tagBatch, TAGGER_BATCH_SYSTEM } from '../music/tagger-core.js';
 import { promptVocabHash } from '../music/embeddings.js';
 import { activeModelLabel } from '../llm/provider.js';
 import { queue } from '../broadcast/queue.js';
-import { tagger, startAnalyzer } from '../broadcast/tagger.js';
+import { tagger, startAnalyzer, startReconcile } from '../broadcast/tagger.js';
 import { config } from '../config.js';
-import * as maDbApi from '../music/ma-db-api.js';
+import * as libraryMod from './library-mod.js';
 
 export const router = express.Router();
 
@@ -131,19 +131,7 @@ router.get('/library/observatory', requireAdmin, async (req, res) => {
     );
 
     if (config.libraryBackend === 'ma-api') {
-      const tracks = await library.allTaggedForObservatory(max);
-      return res.json({
-        tracks,
-        truncated: false,
-        sampled: false,
-        max,
-        hardMax: OBSERVATORY_HARD_MAX,
-        moodVocab: settings.SHOW_MOODS,
-        stats: {
-          ...stats,
-          withAudioEmbedding: stats.total,
-        },
-      });
+      return res.json(await libraryMod.observatoryMa(max, OBSERVATORY_HARD_MAX));
     }
 
     const total = stats.total;
@@ -216,63 +204,7 @@ router.get('/library/observatory/track/:id', requireAdmin, async (req, res) => {
     // MA backend: tracks live in the sidecar, not the local DB.
     if (config.libraryBackend === 'ma-api') {
       try {
-        const t = await maDbApi.apiGet(`/tracks/${id}`, { include: 'analysis' });
-        const clap: number[] | null = t.analysis?.clap_embedding ?? null;
-        const instrm: number | null = t.analysis?.instrumentalness ?? null;
-        const energy: number | null = t.analysis?.energy ?? null;
-        const energyLabel = energy == null ? null : energy >= 0.22 ? 'high' : energy >= 0.11 ? 'medium' : 'low';
-        const mixNext = (await library.tracksLikeThis(id, 8)).map((n: any) => ({
-          id: n.id,
-          title: n.title,
-          artist: n.artist,
-          bpm: n.bpm ?? null,
-          musicalKey: n.musicalKey ?? null,
-          energy: n.energy ?? null,
-          similarity: n._similarity ?? null,
-        }));
-        return res.json({
-          track: {
-            id: String(t.id),
-            title: t.title ?? null,
-            artist: t.artist ?? null,
-            album: t.album ?? null,
-            year: t.year ?? null,
-            genre: t.genre ?? null,
-            durationSec: t.duration ?? null,
-            bpm: t.analysis?.bpm != null ? Math.round(t.analysis.bpm * 10) / 10 : null,
-            musicalKey: t.analysis?.camelot ?? t.analysis?.key ?? null,
-            loudnessLufs: t.analysis?.loudness_lufs ?? null,
-            energy: energyLabel,
-            source: 'ma-api',
-            moods: [],
-            confidence: null,
-            taggerVersion: null,
-            model: null,
-            taggedAt: null,
-            lastfmTags: null,
-            lyricExcerpt: null,
-            introMs: null,
-            analysisConfidence: null,
-            analysisVersion: null,
-            peakDb: null,
-            structure: null,
-            // null = not analysed (no time-range data from MA)
-            vocalRanges: null,
-            pace: null,
-            keyRanges: null,
-          },
-          textEmbedding: null,
-          audioEmbedding: clap,
-          mixNext,
-          _maAnalysis: {
-            valence: t.analysis?.valence ?? null,
-            arousal: t.analysis?.arousal ?? null,
-            danceability: t.analysis?.danceability ?? null,
-            acousticness: t.analysis?.acousticness ?? null,
-            instrumentalness: instrm,
-            brightness: t.analysis?.brightness ?? null,
-          },
-        });
+        return res.json(await libraryMod.observatoryTrackMa(id));
       } catch {
         return res.status(404).json({ error: 'track not found' });
       }
@@ -347,13 +279,7 @@ router.get('/library/untagged', requireAdmin, async (req, res) => {
   if (config.libraryBackend === 'ma-api') {
     // In MA mode there's no local mood-tag index. Return CLAP-analysed tracks
     // as "fully analysed" — the admin UI can use this to see analysis coverage.
-    const cov = await library.getCoverage();
-    return res.json({
-      rows: [],
-      nextCursor: null,
-      maMode: true,
-      coverage: cov,
-    });
+    return res.json(await libraryMod.untaggedMa());
   }
   const limit = Math.min(Math.max(parseIntSafe(req.query?.limit, 50) ?? 50, 1), 100);
   const cursor = decodeCursor(typeof req.query?.cursor === 'string' ? req.query.cursor : '');
@@ -442,6 +368,20 @@ router.post('/library/analyze', requireAdmin, (req, res) => {
   if (tagger.running) return res.status(409).json({ error: 'a tagger/analyzer run is already active', tagger });
   const limit = parseIntSafe(req.body?.limit, null);
   startAnalyzer({ limit: limit ?? undefined, audio: true });
+  res.json({ ok: true, tagger });
+});
+
+// ---------------------------------------------------------------------------
+// POST /library/reconcile — walk Navidrome and prune library rows for tracks
+// that no longer exist there (deleted files, or IDs re-minted by a full
+// rescan). No LLM, no embeddings — the cheap "clear orphaned entries" path,
+// usable even at 100% coverage where Start tagging is disabled. Shares the
+// tagger's single-flight slot: poll /settings (tagger.running / tagger.mode ===
+// 'reconcile') for progress, stop via /tag-library/stop.
+// ---------------------------------------------------------------------------
+router.post('/library/reconcile', requireAdmin, (req, res) => {
+  if (tagger.running) return res.status(409).json({ error: 'a tagger/analyzer run is already active', tagger });
+  startReconcile();
   res.json({ ok: true, tagger });
 });
 

@@ -8,6 +8,7 @@ import { requireAdmin } from '../middleware/auth.js';
 import { queue } from '../broadcast/queue.js';
 import * as dj from '../llm/dj.js';
 import * as subsonic from '../music/library-backend.js';
+import * as library from '../music/library.js';
 import * as settings from '../settings.js';
 import { runStationId, runHourlyCheck, runLink, refreshAutoPlaylist } from '../broadcast/scheduler.js';
 import { skillCatalog, runCapability } from '../skills/_agent.js';
@@ -259,19 +260,29 @@ router.get('/dj/search', requireAdmin, async (req, res) => {
   const q = (typeof req.query?.q === 'string' ? req.query.q : '').trim();
   if (!q) return res.status(400).json({ error: 'q is required' });
   try {
+    await library.load();
     const songs = await subsonic.search(q, { songCount: 12 });
-    const results = songs.map(s => ({
-      id: s.id,
-      title: s.title,
-      artist: s.artist,
-      album: s.album,
-      year: s.year ?? null,
-      genre: s.genre ?? null,
-      duration: s.duration ?? null,
-      // path lets getLocalPath() use the on-disk file when MUSIC_LIBRARY_PATH
-      // is mounted, matching how listener-requested tracks are queued.
-      path: s.path ?? null,
-    }));
+    const results = songs.map(s => {
+      const tag = library.get(s.id);
+      return {
+        id: s.id,
+        title: s.title,
+        artist: s.artist,
+        album: s.album,
+        year: s.year ?? null,
+        genre: s.genre ?? null,
+        duration: s.duration ?? null,
+        // path lets getLocalPath() use the on-disk file when MUSIC_LIBRARY_PATH
+        // is mounted, matching how listener-requested tracks are queued.
+        path: s.path ?? null,
+        // Merge stored tags so the admin table shows real mood/energy status
+        // instead of "needs tags" for every row (the index is the only other
+        // source of tags — Subsonic metadata carries none).
+        moods: tag?.moods ?? [],
+        energy: tag?.energy ?? null,
+        source: tag?.source ?? null,
+      };
+    });
     res.json({ results });
   } catch (err) {
     queue.log('error', `/dj/search failed: ${err.message}`);
@@ -287,20 +298,29 @@ router.get('/dj/search', requireAdmin, async (req, res) => {
 router.get('/dj/recent', requireAdmin, async (req, res) => {
   const limit = Math.min(Math.max(parseInt(String(req.query?.limit || ''), 10) || 20, 1), 50);
   try {
+    await library.load();
     const albums = await subsonic.getRecentlyAddedAlbums({ size: limit });
     const songLists = await Promise.all(
       albums.map((a: any) => subsonic.getAlbum(a.id).catch(() => [])),
     );
-    const results = songLists.flat().slice(0, limit).map((s: any) => ({
-      id: s.id,
-      title: s.title,
-      artist: s.artist,
-      album: s.album,
-      year: s.year ?? null,
-      genre: s.genre ?? null,
-      duration: s.duration ?? null,
-      path: s.path ?? null,
-    }));
+    const results = songLists.flat().slice(0, limit).map((s: any) => {
+      const tag = library.get(s.id);
+      return {
+        id: s.id,
+        title: s.title,
+        artist: s.artist,
+        album: s.album,
+        year: s.year ?? null,
+        genre: s.genre ?? null,
+        duration: s.duration ?? null,
+        path: s.path ?? null,
+        // Merge stored tags so recently-added tracks that are already tagged
+        // show their mood/energy instead of a misleading "needs tags".
+        moods: tag?.moods ?? [],
+        energy: tag?.energy ?? null,
+        source: tag?.source ?? null,
+      };
+    });
     res.json({ results });
   } catch (err) {
     queue.log('error', `/dj/recent failed: ${err.message}`);

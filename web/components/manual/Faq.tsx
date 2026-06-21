@@ -33,7 +33,10 @@ export default function Faq() {
           your own hardware is plenty. A 9B-class local model such as Qwen3.5 9B
           comfortably picks tracks and writes the DJ&rsquo;s lines, as long as you run the
           station on its <em>lean</em> settings: reasoning off, the simpler track-picker,
-          concise scripts. The full set of dials, and what to turn which way, is on the{' '}
+          concise scripts. Step up to a 12B-class model like <strong>Gemma 4 12B</strong>{' '}
+          and you can leave the richer dials on &mdash; including the full picker agent
+          &mdash; while still paying nothing per token. The full set of dials, and what to
+          turn which way, is on the{' '}
           <Link href="/manual/llm" className="bs-link">Models &amp; Tokens</Link> page.
         </p>
       </section>
@@ -109,6 +112,61 @@ export default function Faq() {
           favouring certain artists, whether the library pool is too narrow, and any
           runtime anomalies. It is the tool for &ldquo;the station works, but something
           feels off&rdquo; rather than an outright break.
+        </p>
+      </section>
+
+      <section className="bs-section">
+        <p className="bs-eyebrow">MUSIC LICENSING</p>
+        <h2>Do I need a licence to run a SUB/WAVE station?</h2>
+        <p>
+          Maybe &mdash; it depends on what you stream and who can hear it. SUB/WAVE is
+          software; it grants no rights to any music. Listening privately to music you
+          own is one thing. Broadcasting it where other people can tune in can count as
+          public performance, which is licensed in most countries. Whether you need a
+          licence is on you, the operator. <em>(Not legal advice.)</em>
+        </p>
+      </section>
+
+      <section className="bs-section">
+        <p className="bs-eyebrow">WHO&rsquo;S RESPONSIBLE</p>
+        <h2>Does SUB/WAVE handle licensing for me?</h2>
+        <p>
+          No. It&rsquo;s a broadcast tool, like the Liquidsoap and Icecast it runs on. It
+          doesn&rsquo;t clear, pay, or report anything to any rights body. If your station
+          needs a licence, arranging it is the operator&rsquo;s responsibility.
+        </p>
+      </section>
+
+      <section className="bs-section">
+        <p className="bs-eyebrow">THE TWO RIGHTS</p>
+        <h2>What rights are involved?</h2>
+        <p>
+          Usually two: the composition (songwriting) and the sound recording. In the UK
+          that&rsquo;s PRS for Music and PPL. In the US it&rsquo;s ASCAP/BMI/SESAC for
+          compositions and SoundExchange for recordings. Other countries have their own
+          bodies. A public station can touch both.
+        </p>
+      </section>
+
+      <section className="bs-section">
+        <p className="bs-eyebrow">SMALL AND PRIVATE</p>
+        <h2>It&rsquo;s just me and a few friends and I&rsquo;m not making money &mdash; am I fine?</h2>
+        <p>
+          Non-commercial and small doesn&rsquo;t automatically mean licence-free; public
+          performance rules don&rsquo;t always care whether money changes hands. A private
+          stream only you can reach is lower risk than a public URL you&rsquo;ve shared
+          around. <em>(Not legal advice &mdash; check your local rules.)</em>
+        </p>
+      </section>
+
+      <section className="bs-section">
+        <p className="bs-eyebrow">THE SAFE SIDE</p>
+        <h2>How do I keep a station clearly on the safe side?</h2>
+        <p>
+          Keep it private to people you intend, or build it from music that&rsquo;s cleared
+          for this: your own recordings, Creative Commons, royalty-free libraries, or
+          public domain. SUB/WAVE saves hourly archives, which is the kind of
+          record-keeping a licensed station usually wants if you go that route.
         </p>
       </section>
     </ManualPage>

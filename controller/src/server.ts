@@ -12,6 +12,7 @@ import * as session from './broadcast/session.js';
 import { getFullContext } from './context.js';
 import { startScheduler } from './broadcast/scheduler.js';
 import { startListenerMonitor } from './broadcast/listeners.js';
+import { startAudienceMonitor } from './broadcast/audience.js';
 import { cors } from './middleware/cors.js';
 import { assertAdminConfigured } from './middleware/auth.js';
 import { router as publicRoutes } from './routes/public.js';
@@ -29,6 +30,8 @@ import { router as listenersRoutes } from './routes/listeners.js';
 import { router as webhooksRoutes } from './routes/webhooks.js';
 import { router as scrobbleRoutes } from './routes/scrobble.js';
 import { router as personasRoutes } from './routes/personas.js';
+import { router as backupRoutes } from './routes/backup.js';
+import { router as audienceRoutes } from './routes/audience.js';
 import { loadSecretsIntoEnv } from './setup/secrets.js';
 import { loadSetupConfig } from './setup/config.js';
 import { getSetupStatus } from './setup/firstRun.js';
@@ -59,6 +62,8 @@ app.use(listenersRoutes);
 app.use(webhooksRoutes);
 app.use(scrobbleRoutes);
 app.use(personasRoutes);
+app.use(backupRoutes);
+app.use(audienceRoutes);
 
 // (manual skip is not implemented in this build — Liquidsoap controls pacing)
 
@@ -177,6 +182,7 @@ app.listen(config.server.port, async () => {
 
   queue.startWatcher();
   startListenerMonitor();
+  startAudienceMonitor().catch(err => console.error('[audience] init failed:', err.message));
   startScheduler();
   jingles
     .ensureDefaultIdent()

@@ -1,0 +1,191 @@
+// Pure, side-effect-free LLM helpers — the unit-test seam.
+//
+// Everything here is a pure function of its arguments: no imports from `ai`,
+// `settings`, `fs`, or any module with side effects. That's deliberate — these
+// are the regression-critical bits (the failover gate, the JSON salvage, the
+// usage normaliser), so they live in one importable, testable place
+// (controller/scripts/llm-pure.test.ts pins their behaviour).
+
+// ---------------------------------------------------------------------------
+// Thinking-block stripping
+// ---------------------------------------------------------------------------
+//
+// Some models (Qwen 3, DeepSeek R1, etc.) emit a <think>…</think> reasoning
+// block before the answer. Reasoning is suppressed at the provider layer when
+// `llm.reasoning` is off (provider no-think fetch + the Ollama `think` flag);
+// we still strip any leftover tags defensively here.
+const THINK_TAG_RE = /<think>[\s\S]*?<\/think>\s*/gi;
+const DANGLING_THINK_RE = /^[\s\S]*?<\/think>\s*/i;
+
+export function stripThinking(s: any): any {
+  if (!s) return s;
+  return s.replace(THINK_TAG_RE, '').replace(DANGLING_THINK_RE, '').trim();
+}
+
+// Pull a JSON object out of a free-text reply: drop ```json fences and any
+// prose around it, then take the outermost { … }. Used by djObject's recovery
+// path when native structured output fails to parse.
+export function extractJson(s: any): string {
+  if (!s) throw new Error('empty model response');
+  const t = s.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+  const start = t.indexOf('{');
+  const end = t.lastIndexOf('}');
+  if (start === -1 || end <= start) throw new Error('no JSON object in model response');
+  return t.slice(start, end + 1);
+}
+
+// Normalise the AI SDK usage block into { input, output, total }. Providers
+// vary in which fields they populate (and a local Ollama box often omits them
+// entirely — token stats then read as 0 for that call). `totalUsage` is the
+// agent-loop sum across steps; prefer it when present.
+export function usageOf(result: any): { input: number; output: number; total: number } {
+  const u = result?.totalUsage || result?.usage || {};
+  const input = u.inputTokens ?? u.promptTokens ?? 0;
+  const output = u.outputTokens ?? u.completionTokens ?? 0;
+  const total = u.totalTokens ?? (input + output);
+  return { input, output, total };
+}
+
+// ---------------------------------------------------------------------------
+// Transient vs unreachable error classification
+// ---------------------------------------------------------------------------
+//
+// Three classifiers gate two different recovery mechanisms:
+//   isTransient        → withTransientRetry retries on the SAME leg (5xx / plain 429 / socket).
+//   isUnreachable      → withFailover switches to the BACKUP leg (host is DOWN).
+//   isQuotaOrAuthError → withFailover switches to the BACKUP leg (host UP but
+//                        refusing this leg: quota/usage-limit/billing 429, or
+//                        an auth failure — retrying the same model is futile).
+// isUnreachable is a strict subset of isTransient: it EXCLUDES 408/425/429/5xx,
+// because a host that answers with a status is reachable — those stay with
+// transient retry on the configured model rather than being masked by a silent
+// failover to a different model (discussion #320). The ONE exception is a
+// quota/auth rejection (isQuotaOrAuthError): the leg answered, but it can't
+// recover this call, so it is pulled OUT of the transient set and fails over
+// instead of pointlessly retrying a dead leg (issue #438 — Ollama Cloud's
+// "weekly usage limit" 429s looped on the exhausted leg and never failed over).
+
+const TRANSIENT_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
+const TRANSIENT_CODE = new Set([
+  'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EAI_AGAIN',
+  'UND_ERR_SOCKET', 'UND_ERR_CONNECT_TIMEOUT',
+]);
+
+export function isTransient(err: any): boolean {
+  if (!err) return false;
+  // A quota/usage-limit/auth rejection is permanent for THIS leg this call —
+  // never burn same-leg retries on it; let it propagate to withFailover, which
+  // switches legs (#438). A plain rate-limit 429 (no quota/auth signature) is
+  // unaffected and stays transient below.
+  if (isQuotaOrAuthError(err)) return false;
+  const status = err.statusCode ?? err.status ?? err.cause?.statusCode ?? err.cause?.status;
+  if (typeof status === 'number' && TRANSIENT_STATUS.has(status)) return true;
+  const code = err.code ?? err.cause?.code;
+  if (typeof code === 'string' && TRANSIENT_CODE.has(code)) return true;
+  const name = err.name ?? err.cause?.name;
+  if (name === 'AbortError' || name === 'TimeoutError') return true;
+  const msg = String(err.message || err.cause?.message || '');
+  if (/\b(408|425|429|500|502|503|504)\b/.test(msg)) return true;
+  if (/socket hang up|fetch failed|network.*(error|timeout)/i.test(msg)) return true;
+  return false;
+}
+
+// Host-unreachable: the primary box is DOWN, not merely busy. A strict subset
+// of isTransient — connection refused / DNS failure / connect timeout / socket
+// hang-up. Deliberately EXCLUDES 408/425/429 and 5xx (see above). This is what
+// gates failover to the backup leg. NOTE: the AgentDeadlineError raised by
+// withDeadline deliberately does NOT match here (its name is neither AbortError
+// nor TimeoutError, and its message carries no network signature) — a model
+// that overthinks past the deadline is not a host that's down.
+const UNREACHABLE_CODE = new Set([
+  'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT',
+]);
+
+export function isUnreachable(err: any): boolean {
+  if (!err) return false;
+  const code = err.code ?? err.cause?.code;
+  if (typeof code === 'string' && UNREACHABLE_CODE.has(code)) return true;
+  const name = err.name ?? err.cause?.name;
+  if (name === 'AbortError' || name === 'TimeoutError') return true;
+  const msg = String(err.message || err.cause?.message || '');
+  if (/fetch failed|socket hang up|getaddrinfo|connect ECONNREFUSED|connect ETIMEDOUT|ECONNREFUSED|ENOTFOUND|EAI_AGAIN/i.test(msg)) {
+    return true;
+  }
+  return false;
+}
+
+// Provider refused this leg in a way that retrying the SAME model won't fix
+// this call: a quota / usage-limit / billing rejection, or an authentication
+// failure (bad / missing API key). The host is UP (it answered), so this is NOT
+// isUnreachable — but unlike a transient "slow down" 429, the same leg can't
+// recover, so withFailover treats it like host-down and switches to the backup
+// leg (issue #438). Detected by message because providers surface quota/auth
+// differently and the AI SDK often flattens the status into the message text;
+// a bare 429 with no quota signature stays a plain transient rate-limit.
+const QUOTA_RE = /usage limit|quota|exceeded your current|insufficient[ _]?(quota|funds|credit|balance)|upgrade for higher|out of credit|payment required/i;
+const AUTH_RE = /invalid[ _]?api[ _]?key|incorrect[ _]?api[ _]?key|unauthorized|authentication (failed|error)|forbidden|api key (not|is|was) /i;
+
+export function isQuotaOrAuthError(err: any): boolean {
+  if (!err) return false;
+  const status = err.statusCode ?? err.status ?? err.cause?.statusCode ?? err.cause?.status;
+  // Auth: any 401/403, or an auth-shaped message regardless of status.
+  if (status === 401 || status === 403) return true;
+  // Quota/billing: a payment-required status, or a quota-shaped message. NOTE a
+  // bare 429 is deliberately NOT enough — only a 429 whose message names a
+  // quota/usage-limit qualifies (via QUOTA_RE below).
+  if (status === 402) return true;
+  const msg = String(err.message || err.cause?.message || '');
+  if (AUTH_RE.test(msg)) return true;
+  if (QUOTA_RE.test(msg)) return true;
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Tool-call / diagnostics extraction
+// ---------------------------------------------------------------------------
+
+// Flatten a tool-loop result's discovery-tool trail for /debug. Excludes the
+// synthetic `done` tool — it's the schema-emit signal, not a real discovery
+// action. Shared by the native-output and done-tool branches of djAgent.
+export function flattenToolCalls(result: any): any[] {
+  return ((result?.steps as any) || []).flatMap((s: any) => {
+    const results = s.toolResults || [];
+    return (s.toolCalls || [])
+      .filter((c: any) => c.toolName !== 'done')
+      .map((c: any, i: number) => ({
+        name: c.toolName,
+        args: c.input ?? c.args ?? null,
+        result: results[i]?.output ?? results[i]?.result ?? null,
+      }));
+  });
+}
+
+// Pull diagnostic info off an AI SDK structured-output error. When the model
+// emits something but the SDK can't parse it into the schema, the raw text
+// lives on err.text (and the original cause on err.cause). Without this, the
+// failure record only carries err.message — useless for "WHY didn't it parse?"
+// triage. Best-effort: every field is optional, missing ones are skipped.
+export function failureDiagnostics(err: any): any {
+  const out: any = {};
+  if (typeof err?.text === 'string') out.responseText = err.text;
+  if (err?.finishReason) out.finishReason = err.finishReason;
+  if (err?.usage) out.usage = usageOf({ usage: err.usage });
+  if (err?.cause?.message && err.cause.message !== err.message) {
+    out.causeMessage = err.cause.message;
+  }
+  // The agent loop's partial steps before the final-output failure — same
+  // shape as the success-path toolCalls flatten.
+  const steps = err?.response?.steps || err?.steps;
+  if (Array.isArray(steps) && steps.length) {
+    out.toolCalls = steps.flatMap((s: any) => {
+      const results = s.toolResults || [];
+      return (s.toolCalls || []).map((c: any, i: number) => ({
+        name: c.toolName,
+        args: c.input ?? c.args ?? null,
+        result: results[i]?.output ?? results[i]?.result ?? null,
+      }));
+    });
+    out.steps = steps.length;
+  }
+  return out;
+}

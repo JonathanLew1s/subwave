@@ -436,7 +436,9 @@ git commit -m "refactor(llm): route segment-tools artist lookups through library
 
 ### Task 4: Port `llm/dj.ts`'s `pickNextTrack`/`PICKER_CRITERIA` → `llm/internal/prompts/picker.ts`
 
-Upstream's `internal/prompts/picker.ts` independently improved `pickNextTrack` (constrains the picked id to a `z.enum` of real candidate ids, falling back to `z.string()` when the pool is empty — closes an "agent returned unknown id" hole). Our changes are the `SHOW BRIEF` criterion reorder, the `recentSimilarity`/`simLine` param, and the reworded `VARIETY` line. Merge both.
+**Upstream moved this file twice since the design doc was written.** As of `upstream/main` (after PR #453 "steer per-show music by genre, decade, and energy"), `internal/prompts/picker.ts` independently gained: (a) the `z.enum` candidate-id grammar constraint on `pickNextTrack` (closes an "agent returned unknown id" hole), and (b) a `ShowMusic` type + `showMusicLean()` helper that renders a *soft* lean line for a show's `genre`/`fromYear`/`toYear`/`energy` ("lean toward X... these are preferences, not hard filters").
+
+**Resolved product decision (confirmed with the user):** our fork keeps genre as a **hard constraint** via the existing `SHOW BRIEF` criterion (driven by `show.topic` free text) — do NOT adopt upstream's soft genre lean. But DO adopt upstream's `ShowMusic` type and `showMusicLean()` plumbing for `fromYear`/`toYear`/`energy`, which stay soft leans (no fork opinion on those) — with `genre` stripped out of `showMusicLean()`'s soft-lean line so it isn't suggested as a mere preference. Also adopt upstream's `z.enum` grammar improvement. Keep our `recentSimilarity`/`simLine` param and our `VARIETY` rewording.
 
 **Files:**
 - Create: `controller/src/llm/internal/prompts/picker.ts`
@@ -467,13 +469,35 @@ export const PICKER_CRITERIA = `Selection criteria, in order:
 4. VARIETY — never pick the same artist consecutively; don't repeat tracks already played today; rotate energy. Mix well-known tracks with deeper cuts — don't cluster obvious global hits back to back. If recent picks have felt very similar to each other (check the recentSimilarity flag), prefer a briefPool candidate from a different genre or energy stratum — even over a strong similarity match. Variety over cleverness — never pick a track because its title literally matches the time of day, the weather, or anything else literal.
 5. INTEREST — prefer something that creates a moment, not the most generic option.`;
 
-function pickerSystem(show?: { name: string; topic: string } | null, simLine: string = '') {
+// Same type as upstream's ShowMusic, kept under our own name since `genre` is
+// NOT treated as a soft lean here — it's a hard constraint enforced via the
+// show brief text (SHOW BRIEF criterion above) and the brief-pool tool
+// restriction in dj-agent.ts, not via this prompt line.
+export type ShowMusic = { name: string; topic: string; genre?: string; fromYear?: number | null; toYear?: number | null; energy?: string };
+
+// Soft lean line for decade/energy only. `genre` is deliberately excluded —
+// unlike upstream, our fork treats show genre as a hard constraint (SHOW
+// BRIEF criterion #1), so it must never be phrased as a mere preference here.
+export function showMusicLean(show?: ShowMusic | null): string {
+  if (!show) return '';
+  const parts: string[] = [];
+  if (show.fromYear != null || show.toYear != null) {
+    const from = show.fromYear != null ? String(show.fromYear) : '';
+    const to = show.toYear != null ? String(show.toYear) : '';
+    parts.push(from && to ? `prefer tracks from ${from}–${to}` : `prefer tracks ${from ? `from ${from} onward` : `up to ${to}`}`);
+  }
+  if (show.energy) parts.push(`favour ${show.energy}-energy tracks`);
+  if (!parts.length) return '';
+  return `\n\nMusic steer for this show — ${parts.join('; ')}. These are preferences, not hard filters: break them only when the flow genuinely demands it.`;
+}
+
+function pickerSystem(show?: ShowMusic | null, simLine: string = '') {
   const stationName = settings.get().station;
   const showLine = show?.topic
     ? `\n\nCurrent show brief — follow this for every pick:\n${show.topic}`
     : '';
   return `You are the DJ for ${stationName}, a personal internet radio station.
-Pick the single best NEXT track from the candidate pool, given recent plays and the current context.${showLine}${simLine}
+Pick the single best NEXT track from the candidate pool, given recent plays and the current context.${showLine}${showMusicLean(show)}${simLine}
 
 ${PICKER_CRITERIA}
 
@@ -500,7 +524,7 @@ export async function pickNextTrack({ candidates, recentPlays, context, show = n
   candidates: any[];
   recentPlays: any;
   context: any;
-  show?: { name: string; topic: string } | null;
+  show?: ShowMusic | null;
   recentSimilarity?: string | null;
 }) {
   const user = JSON.stringify({
@@ -552,10 +576,10 @@ export async function pickNextTrack({ candidates, recentPlays, context, show = n
 - [ ] **Step 3: Remove `PICKER_CRITERIA`/`pickerSystem`/`pickNextTrack` from `controller/src/llm/dj.ts` and re-export instead.** Delete the block from the `// LLM PICKER` comment through the end of `pickNextTrack` (the block shown in the spec's diff, roughly lines 433–509 depending on current line numbers — search for `// LLM PICKER` to find it) and add at the end of the file:
 
 ```typescript
-export { PICKER_CRITERIA, pickNextTrack } from './internal/prompts/picker.js';
+export { PICKER_CRITERIA, pickNextTrack, showMusicLean } from './internal/prompts/picker.js';
 ```
 
-Confirm this matches `git show upstream/main:controller/src/llm/dj.ts`'s line `export { PICKER_CRITERIA, pickNextTrack } from './internal/prompts/picker.js';` exactly (it does — verified during planning).
+**Note:** as of the latest `upstream/main` fetch, upstream's own barrel line is `export { PICKER_CRITERIA, pickNextTrack, showMusicLean } from './internal/prompts/picker.js';` — confirm with `git show upstream/main:controller/src/llm/dj.ts | grep picker.js` before finalizing, since upstream may have changed the export list again.
 
 - [ ] **Step 4: Check `dj.ts` for now-unused imports.** After removing the block, `z` (from `zod`) and `settings` may still be used elsewhere in `dj.ts` — check before removing any import:
 
@@ -769,6 +793,8 @@ git commit -m "refactor(settings): extract fork-specific settings fields into se
 ### Task 8: Extract `broadcast/dj-agent.ts` and `broadcast/tagger.ts` fork logic
 
 `dj-agent.ts` has the largest diff in this group (111 insertions) — likely the brief-pool construction call (`music/pool.js buildBriefPool`, per `llm/tools.ts`'s comment in Task 1) and the `justPlayedArtists`/`maxDurationSec`/`excludePatterns` wiring into `buildPickerTools`. `tagger.ts`'s diff is small (16 insertions) — read it before deciding whether extraction is worth the indirection (per the spec's guidance, a trivial diff may stay inline).
+
+**Important — upstream has since added its own show-steering line to `pickSystem()`:** `git diff e59bb42 upstream/main -- controller/src/broadcast/dj-agent.ts` shows upstream now calls `dj.showMusicLean(activeShow)` and appends it after `showLine` in `pickSystem()`. Per the resolved product decision in Task 4, our fork's `showMusicLean()` (ported in Task 4) excludes `genre` from its soft-lean output — genre stays hard via the existing `briefPoolLine`/`MOOD_AWARE_TOOLS` mechanism already in `dj-agent.ts`. So: when extracting, make sure `pickSystem()` ends up calling `dj.showMusicLean(activeShow)` (matching upstream's wiring) in addition to keeping our existing `showLine`/`briefPoolLine` logic — do not let either Task 1's nor upstream's version silently drop the other's behavior. Re-check `git show upstream/main:controller/src/broadcast/dj-agent.ts` for the exact current `pickSystem()` shape before merging, since this file may have moved again.
 
 **Files:**
 - Create: `controller/src/broadcast/dj-agent-mod.ts`

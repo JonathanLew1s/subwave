@@ -10,6 +10,7 @@ import * as tts from '../audio/tts.js';
 import * as chatterbox from '../audio/chatterbox.js';
 import * as piper from '../audio/piper.js';
 import * as llmProvider from '../llm/provider.js';
+import { probeEmbeddingConfig } from '../music/embeddings.js';
 import { queue } from '../broadcast/queue.js';
 import { restartLiquidsoap, startStream, stopStream, streamStatus } from '../broadcast/liquidsoap-control.js';
 import { invalidateWeatherCache } from '../context.js';
@@ -162,6 +163,60 @@ router.post('/settings', requireAdmin, async (req, res) => {
     res.json(result);
   } catch (err) {
     res.status(400).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /settings/llm/discover — probe a locca / openai-compatible server for
+// liveness + its loaded model list, so the onboarding wizard and admin
+// Settings UI can auto-fill the model field with no hand-typing. Non-mutating.
+// `?baseUrl=` overrides; default is the locca host URL (host.docker.internal:8080).
+// Always 200s with { reachable, models, baseUrl } — an unreachable server is a
+// normal answer, not an error.
+// ---------------------------------------------------------------------------
+router.get('/settings/llm/discover', requireAdmin, async (req, res) => {
+  const baseUrl =
+    String(req.query.baseUrl || '').trim().replace(/\/+$/, '') ||
+    llmProvider.DEFAULT_LOCCA_BASE_URL;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 3000);
+  try {
+    const r = await fetch(`${baseUrl}/models`, { signal: ctrl.signal });
+    if (!r.ok) {
+      return res.json({ reachable: false, models: [], baseUrl, error: `HTTP ${r.status}` });
+    }
+    const data: any = await r.json();
+    const models = Array.isArray(data?.data)
+      ? data.data.map((m: any) => m?.id).filter((id: any): id is string => typeof id === 'string')
+      : [];
+    res.json({ reachable: true, models, baseUrl });
+  } catch (err: any) {
+    res.json({ reachable: false, models: [], baseUrl, error: err?.message || 'unreachable' });
+  } finally {
+    clearTimeout(timer);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /settings/embedding/probe — test whether the configured (or supplied)
+// embedding endpoint can actually produce embeddings, surfacing the result
+// in the admin UI BEFORE a long tagging run instead of failing mid-job.
+// Optional query overrides (provider/model/baseUrl/ollamaUrl) test the unsaved
+// form values; omitted fields fall back to saved settings.embedding → llm.
+// Always 200s with { ok, dim, code, message } — a chat-model / unreachable
+// server is a normal, actionable answer, not an error.
+// ---------------------------------------------------------------------------
+router.get('/settings/embedding/probe', requireAdmin, async (req, res) => {
+  const overrides: Record<string, string> = {};
+  for (const k of ['provider', 'model', 'baseUrl', 'ollamaUrl']) {
+    const v = req.query[k];
+    if (typeof v === 'string' && v.trim()) overrides[k] = v.trim();
+  }
+  try {
+    const r = await probeEmbeddingConfig(overrides);
+    res.json({ ok: r.code === 'ok', dim: r.dim ?? null, code: r.code, message: r.message });
+  } catch (err: any) {
+    res.json({ ok: false, dim: null, code: 'unknown', message: err?.message || 'probe failed' });
   }
 });
 

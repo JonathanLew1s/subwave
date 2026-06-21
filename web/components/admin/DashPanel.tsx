@@ -8,6 +8,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useAdminAuth } from '../../lib/adminAuth';
 import { notify, errorMessage } from '../../lib/notify';
 import { turnClass, turnKey, turnText } from '../../lib/sessionFeed';
+import { fmtClock } from '../../lib/format';
 import type { SessionTurn } from '../../lib/types';
 import type {
   NowPlayingTrack,
@@ -57,6 +58,8 @@ interface DashStatus {
   activeShow?: ActiveShow | null;
   queue?: QueueState;
   sessionMessages?: SessionTurn[];
+  /** Station IANA zone — render on-air timestamps in it (issue #418). */
+  timezone?: string;
 }
 
 // Subset of /stats (admin) the health strip reads: DJ p95 latency + the TTS
@@ -78,6 +81,9 @@ interface ListenerConnection {
   mount: string;
   userAgent: string;
   connectedSeconds: number;
+  // Raw sockets folded into this row. Safari opens 2 per client (counts as one
+  // listener); >1 surfaces as a ×N badge. Absent/1 for normal single-socket clients.
+  connections?: number;
 }
 
 interface ConnectionsState {
@@ -374,6 +380,9 @@ export default function DashPanel() {
 
   const np = status?.nowPlaying;
   const ctx = status?.context;
+  // Station zone — on-air timestamps render in it so they match what the DJ
+  // speaks, regardless of the operator's own browser timezone (issue #418).
+  const tz = status?.timezone;
   const q: QueueState = status?.queue || {};
   const listenersValue = status?.listeners;
   const listenersObj = listenersValue && typeof listenersValue === 'object' ? listenersValue : null;
@@ -466,7 +475,7 @@ export default function DashPanel() {
 
           <Card
             title="Booth log"
-            sub={`${booth.length} session turns`}
+            sub={`${booth.length} session turns${tz ? ` · times in ${tz}` : ''}`}
             right={<Pill>session · live</Pill>}
             className="flex flex-col"
             bodyClass="flex flex-1 flex-col min-h-0"
@@ -478,9 +487,7 @@ export default function DashPanel() {
                 {booth.map((turn, i) => (
                   <div key={turnKey(turn, i)} className={`log ${classTone(turnClass(turn))}`}>
                     <span className="t">
-                      {turn.t != null
-                        ? new Date(turn.t).toLocaleTimeString('en-GB', { hour12: false })
-                        : ''}
+                      {fmtClock(turn.t, tz)}
                     </span>
                     <span className="k">[{turn.kind}]</span>
                     <span className="msg">{turnText(turn)}</span>
@@ -634,6 +641,14 @@ export default function DashPanel() {
                     </td>
                     <td className="max-w-[360px] truncate py-1.5" title={c.userAgent}>
                       {clientLabel(c.userAgent)}
+                      {c.connections && c.connections > 1 ? (
+                        <span
+                          className="ml-1.5 text-[10px] font-bold text-muted"
+                          title={`${c.connections} connections — Safari opens 2 sockets per listener`}
+                        >
+                          ×{c.connections}
+                        </span>
+                      ) : null}
                     </td>
                   </tr>
                 ))}
@@ -644,7 +659,7 @@ export default function DashPanel() {
       </Card>
 
       {/* ── REQUESTS ───────────────────────────────────────────────────── */}
-      <RequestsCard requests={requests} err={reqErr} />
+      <RequestsCard requests={requests} err={reqErr} tz={tz} />
 
       {!status && !err && <div className="text-muted italic">connecting…</div>}
 
@@ -777,7 +792,7 @@ function oneLine(s: unknown, n = 80): string {
 
 // The Requests card — every listener request and exactly how the AI DJ
 // resolved it. Newest first; each row expands to the full debug trace.
-function RequestsCard({ requests, err }: { requests: RequestEntry[] | null; err: string | null }) {
+function RequestsCard({ requests, err, tz }: { requests: RequestEntry[] | null; err: string | null; tz?: string }) {
   return (
     <Card
       title="Requests"
@@ -798,7 +813,7 @@ function RequestsCard({ requests, err }: { requests: RequestEntry[] | null; err:
       ) : (
         <div className="grid max-h-[520px] gap-1.5 overflow-y-auto">
           {requests.map((r, i) => (
-            <RequestRow key={`${r.t ?? ''}:${i}`} r={r} />
+            <RequestRow key={`${r.t ?? ''}:${i}`} r={r} tz={tz} />
           ))}
         </div>
       )}
@@ -806,7 +821,7 @@ function RequestsCard({ requests, err }: { requests: RequestEntry[] | null; err:
   );
 }
 
-function RequestRow({ r }: { r: RequestEntry }) {
+function RequestRow({ r, tz }: { r: RequestEntry; tz?: string }) {
   const ok = r.status === 'resolved';
   // Matcher breakdown — only the fields that carry a value, joined compactly.
   const trace = [
@@ -831,7 +846,7 @@ function RequestRow({ r }: { r: RequestEntry }) {
         </span>
         <span className="caption text-[10px]">{r.ms != null ? `${r.ms}ms` : ''}</span>
         <span className="mono-num text-[10px] text-muted">
-          {r.t ? new Date(r.t).toLocaleTimeString('en-GB', { hour12: false }) : '—'}
+          {fmtClock(r.t, tz) || '—'}
         </span>
       </summary>
       <div className="grid gap-2 px-2.5 pt-1 pb-2.5 text-[12px]">

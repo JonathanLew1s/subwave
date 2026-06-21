@@ -17,7 +17,11 @@ import {
   activeEmbeddingDim,
   embeddingEnabled,
   embeddingProviderInfo,
+  embeddingInfoOf,
+  resolveEmbeddingCfg,
+  buildEmbeddingModel,
 } from '../llm/provider.js';
+import type { EmbeddingCfg } from '../llm/provider.js';
 import { SHOW_MOODS as MOOD_VOCAB } from '../settings.js';
 import crypto from 'node:crypto';
 
@@ -106,6 +110,7 @@ export type ProbeCode =
   | 'unauthorized'        // 401 — typically cloud-routed Ollama or wrong API key
   | 'unreachable'         // connection refused / DNS / timeout
   | 'not_embedding_model' // server reached, but it's a chat model / no pooling (#319)
+  | 'bad_url'             // baseUrl missing/malformed — fetch can't parse the URL
   | 'unknown';            // anything else — message has the raw error
 
 export interface ProbeResult {
@@ -146,11 +151,24 @@ function classifyEmbeddingError(err: any): { code: ProbeCode; raw: string } {
   ) {
     return { code: 'unreachable', raw };
   }
+  // A missing or malformed base URL makes the SDK build a relative request URL
+  // (e.g. just "/embeddings"), which fetch rejects before any network call.
+  if (
+    txt.includes('failed to parse url') ||
+    txt.includes('invalid url') ||
+    txt.includes('no embedding server url is set')
+  ) {
+    return { code: 'bad_url', raw };
+  }
   return { code: 'unknown', raw };
 }
 
-function actionableMessage(code: ProbeCode, raw: string): string {
-  const { provider, model, ollamaUrl } = embeddingProviderInfo();
+function actionableMessage(
+  code: ProbeCode,
+  raw: string,
+  info: { provider: string; model: string; ollamaUrl: string },
+): string {
+  const { provider, model, ollamaUrl } = info;
   switch (code) {
     case 'not_found':
       if (provider === 'ollama') {
@@ -190,17 +208,21 @@ function actionableMessage(code: ProbeCode, raw: string): string {
       }
       return `Can't reach provider "${provider}" — check network / baseUrl. (${raw})`;
     case 'not_embedding_model':
-      if (provider === 'openai-compatible') {
+      if (provider === 'openai-compatible' || provider === 'locca') {
+        const startCmd =
+          provider === 'locca'
+            ? `        locca embed nomic     # dedicated embedding server on its own port`
+            : `        llama-server -m nomic-embed-text-v1.5.Q8_0.gguf \\\n` +
+              `          --embeddings --pooling mean --host 0.0.0.0 --port 8090`;
         return (
           `The embedding endpoint is reachable but "${model}" can't produce embeddings —\n` +
           `  it's a chat/generative model, not an embedding model.\n` +
           `  By default settings.embedding inherits settings.llm.baseUrl, so embeddings\n` +
-          `  point at your CHAT server. Run a DEDICATED embedding model on its own\n` +
-          `  llama.cpp server (note --embeddings --pooling mean):\n` +
-          `        llama-server -m nomic-embed-text-v1.5.Q8_0.gguf \\\n` +
-          `          --embeddings --pooling mean --host 0.0.0.0 --port 8090\n` +
+          `  point at your CHAT server. A single llama.cpp/locca server can't do both —\n` +
+          `  run a DEDICATED embedding server (note --embeddings --pooling mean):\n` +
+          startCmd + `\n` +
           `  then in /admin/settings → Embedding set:\n` +
-          `        baseUrl = http://<host>:8090/v1\n` +
+          `        baseUrl = http://<host>:8090/v1   (the embedding server's URL)\n` +
           `        model   = nomic-embed-text\n` +
           `  (server said: ${raw})`
         );
@@ -211,6 +233,26 @@ function actionableMessage(code: ProbeCode, raw: string): string {
         `  Point settings.embedding at a real embedding model (e.g. nomic-embed-text),\n` +
         `  served with embeddings enabled and a pooling type other than 'none'.\n` +
         `  (server said: ${raw})`
+      );
+    case 'bad_url':
+      if (provider === 'locca' || provider === 'openai-compatible') {
+        return (
+          `No usable embedding server URL for provider "${provider}".\n` +
+          `  By default settings.embedding inherits settings.llm — but a chat\n` +
+          `  llama.cpp/locca server can't also do embeddings. Run a DEDICATED\n` +
+          `  embedding server and point settings.embedding.baseUrl at it:\n` +
+          `        locca embed nomic     # dedicated embedding server on its own port\n` +
+          `  then in /admin/settings → Embedding set:\n` +
+          `        baseUrl = http://<host>:8090/v1   (full URL, with http:// and /v1)\n` +
+          `        model   = nomic-embed-text\n` +
+          `  (${raw})`
+        );
+      }
+      return (
+        `The embedding server base URL is missing or malformed, so the request\n` +
+        `  couldn't be sent. Set a full URL (with http:// and the /v1 suffix) in\n` +
+        `  /admin/settings → Embedding, e.g. http://host.docker.internal:8090/v1.\n` +
+        `  (${raw})`
       );
     case 'unknown':
     default:
@@ -269,17 +311,31 @@ async function tryOllamaPull(model: string, ollamaUrl: string): Promise<boolean>
   }
 }
 
-async function probeOnce(): Promise<ProbeResult> {
+// Probe an explicit embedding config — builds a one-off model, embeds a short
+// string, and returns the real vector length on success or an actionable
+// message on failure. Shared by probeOnce() (saved config, used by the tagger
+// preflight) and the /settings/embedding/probe endpoint (unsaved form values,
+// passed as overrides) so both classify identically and name the right server.
+export async function probeEmbeddingConfig(
+  overrides: Partial<EmbeddingCfg> = {},
+): Promise<ProbeResult> {
+  const cfg = resolveEmbeddingCfg(overrides);
+  const info = embeddingInfoOf(cfg);
   try {
-    const vecs = await embedTexts(['subwave embedding probe']);
+    const model = buildEmbeddingModel(cfg);
+    const { embeddings } = await embedMany({ model, values: ['subwave embedding probe'] });
     // Measure the real vector length from the live server — authoritative dim,
     // independent of the name→dim guess table (#319).
-    const dim = Array.isArray(vecs[0]) ? vecs[0].length : undefined;
+    const dim = Array.isArray(embeddings?.[0]) ? embeddings[0].length : undefined;
     return { code: 'ok', message: 'ok', dim };
   } catch (err: any) {
     const { code, raw } = classifyEmbeddingError(err);
-    return { code, message: actionableMessage(code, raw) };
+    return { code, message: actionableMessage(code, raw, info) };
   }
+}
+
+function probeOnce(): Promise<ProbeResult> {
+  return probeEmbeddingConfig();
 }
 
 // One-shot readiness check used by the tagger before phase-1. Auto-pulls a

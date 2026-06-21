@@ -5,6 +5,7 @@ import express from 'express';
 import { stat, readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import * as subsonic from '../music/library-backend.js';
+import * as library from '../music/library.js';
 import * as settings from '../settings.js';
 import { config } from '../config.js';
 import { getFullContext } from '../context.js';
@@ -14,6 +15,7 @@ import { getStreamStatus } from '../broadcast/listeners.js';
 import { getSetupStatusSync } from '../setup/firstRun.js';
 import { getStationTimezone } from '../time.js';
 import { listThemes, DEFAULT_THEME_ID } from '../themes.js';
+import { lifetimeTokenCount } from '../llm/log.js';
 
 export const router = express.Router();
 
@@ -151,6 +153,22 @@ router.get('/now-playing', async (req, res) => {
       queue.getNowPlaying(),
       getFullContext(),
     ]);
+    // Enrich the live track with the analysis/tag data the player surfaces in
+    // its minimal metadata strip (genre · BPM · key · mood). All of it lives
+    // in the library DB keyed by subsonic_id; getNowPlaying() stays a pure
+    // reader of now-playing.json. A not-yet-tagged track (or unloaded DB)
+    // yields null here and the fields are simply omitted.
+    if (nowPlaying?.subsonic_id) {
+      const rec = library.get(nowPlaying.subsonic_id);
+      if (rec) {
+        nowPlaying.genre = rec.genre ?? null;
+        nowPlaying.bpm = rec.bpm ?? null;
+        nowPlaying.musicalKey = rec.musicalKey ?? null;
+        nowPlaying.moods = Array.isArray(rec.moods) ? rec.moods : [];
+        nowPlaying.energy = rec.energy ?? null;
+        if (nowPlaying.year == null && rec.year != null) nowPlaying.year = rec.year;
+      }
+    }
     // Served from the 15s listener-monitor cache — no per-request Icecast hit.
     const stream = getStreamStatus();
     const persona = settings.getEffectivePersona();
@@ -184,6 +202,15 @@ router.get('/now-playing', async (req, res) => {
       listeners: stream.listeners,
       streamOnline: stream.online,
       streamBitrate: stream.bitrate,
+      // Cumulative since-boot LLM token total — drives the listener-facing
+      // token ticker next to the now-playing time. Aggregate integer only; no
+      // model/cost breakdown (that stays on the admin-gated /stats surface).
+      llmTokens: lifetimeTokenCount(),
+      // The station's IANA zone. The DJ speaks the time in this zone (time.ts),
+      // so on-air log timestamps in the UI must be rendered in it too — else an
+      // operator/listener viewing from another zone sees stamps that disagree
+      // with what the DJ just said (issue #418).
+      timezone: getStationTimezone(),
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -270,6 +297,8 @@ router.get('/state', (req, res) => {
     ...snap,
     needsSetup: getSetupStatusSync().needsSetup,
     theme: { active: activeThemeId },
+    // Station zone for rendering djLog timestamps in station-local time (#418).
+    timezone: getStationTimezone(),
   });
 });
 

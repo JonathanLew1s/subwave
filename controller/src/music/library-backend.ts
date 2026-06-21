@@ -38,6 +38,8 @@ export const getRecentlyAddedAlbums: S['getRecentlyAddedAlbums'] = (...a) => (b(
 export const getFrequentAlbums: S['getFrequentAlbums'] = (...a) => (b().getFrequentAlbums as S['getFrequentAlbums'])(...a);
 export const getArtistInfo: S['getArtistInfo'] = (...a) => (b().getArtistInfo as S['getArtistInfo'])(...a);
 export const getTopSongs: S['getTopSongs'] = (...a) => (b().getTopSongs as S['getTopSongs'])(...a);
+export const resolveArtist: S['resolveArtist'] = (...a) => (b().resolveArtist as S['resolveArtist'])(...a);
+export const getRecentSongsByArtist: S['getRecentSongsByArtist'] = (...a) => (b().getRecentSongsByArtist as S['getRecentSongsByArtist'])(...a);
 export const getAlbum: S['getAlbum'] = (...a) => (b().getAlbum as S['getAlbum'])(...a);
 export const getSong: S['getSong'] = (...a) => (b().getSong as S['getSong'])(...a);
 export const getArtist: S['getArtist'] = (...a) => (b().getArtist as S['getArtist'])(...a);
