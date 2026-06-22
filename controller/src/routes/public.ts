@@ -161,7 +161,13 @@ router.get('/now-playing', async (req, res) => {
     // getNowPlaying() stays a pure reader of now-playing.json. A not-yet-
     // tagged track (or unloaded DB) yields null here and the fields are
     // simply omitted.
-    const nowPlayingId = nowPlaying?.subsonic_id || nowPlaying?.ma_id;
+    // Pick by active backend, not field truthiness — a stale now-playing.json
+    // written before the ma-db-api.ts getAnnotatedUri fix (or a backend switch
+    // mid-history) can leave a real value sitting under the OTHER backend's
+    // id field, which would otherwise win a plain `||` check.
+    const nowPlayingId = config.libraryBackend === 'ma-api'
+      ? (nowPlaying?.ma_id || nowPlaying?.subsonic_id)
+      : (nowPlaying?.subsonic_id || nowPlaying?.ma_id);
     if (nowPlayingId) {
       const rec = library.get(nowPlayingId);
       if (rec) {
