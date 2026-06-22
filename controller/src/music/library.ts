@@ -86,6 +86,20 @@ export function get(songId: string): any {
   };
 }
 
+// Async sibling of get() for the one caller that genuinely needs MA mode to
+// hit the live sidecar rather than the local tag cache: routes/public.ts's
+// /now-playing enrichment. MA mode has no local mood-tag DB to read a track
+// back from — get() above only ever sees data the tagger separately synced
+// in, which the now-playing path can't assume exists for whatever's airing
+// right now. Deliberately NOT folded into get() itself: get() is called in
+// hot per-candidate picker-ranking loops (mix.ts, music/picker.ts) where a
+// network round-trip per call would be a real regression — this is only
+// called once per track change.
+export async function getNowPlayingMeta(songId: string): Promise<any> {
+  if (config.libraryBackend === 'ma-api') return _ma.getNowPlayingMeta(songId);
+  return get(songId);
+}
+
 // Back-compat shim. Old callers pass {title, artist, album, year, genre,
 // moods, energy} in one shot. The DB has split write surfaces (metadata +
 // tags + enrichment) but for a single-track legacy write we collapse them.

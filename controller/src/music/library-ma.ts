@@ -247,6 +247,39 @@ export async function getAnalysisAxes(id: string): Promise<Record<string, number
   }
 }
 
+// Light-weight per-track metadata for the player's now-playing metadata strip
+// (genre · BPM · key · mood/energy) — a single sidecar call, not the heavy
+// dossier shape observatoryTrackMa builds (no mixNext/embeddings here, this
+// runs on every track change, not on an admin click). MA mode has no mood-tag
+// index, so `moods` is always []; the player only ever needed energy + the
+// acoustic strip in practice. Returns null on any failure or missing analysis
+// — the caller (routes/public.ts) already treats null as "omit these fields",
+// same as a not-yet-tagged Navidrome track.
+export async function getNowPlayingMeta(id: string): Promise<{
+  genre: string | null;
+  bpm: number | null;
+  musicalKey: string | null;
+  energy: string | null;
+  moods: string[];
+  year: number | null;
+} | null> {
+  if (!id) return null;
+  try {
+    const t = await apiGet<any>(`/tracks/${id}`, { include: 'analysis' });
+    if (!t) return null;
+    return {
+      genre: t.genre ?? null,
+      bpm: t.analysis?.bpm != null ? Math.round(t.analysis.bpm * 10) / 10 : null,
+      musicalKey: t.analysis?.camelot ?? t.analysis?.key ?? null,
+      energy: t.analysis?.energy != null ? energyLabel(t.analysis.energy) : null,
+      moods: [],
+      year: t.year ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function filter(opts: FilterOpts = {}): Promise<{ total: number; rows: FilteredRow[] }> {
   const limit = opts.limit ?? 50;
   const offset = opts.offset ?? 0;

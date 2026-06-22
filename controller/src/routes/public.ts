@@ -154,13 +154,14 @@ router.get('/now-playing', async (req, res) => {
       getFullContext(),
     ]);
     // Enrich the live track with the analysis/tag data the player surfaces in
-    // its minimal metadata strip (genre · BPM · key · mood). All of it lives
-    // in the library DB, keyed by whichever id the active backend uses
-    // (subsonic_id for Navidrome, ma_id for Music Assistant) — library.get()
-    // itself is backend-agnostic, it just looks up whatever id it's given.
-    // getNowPlaying() stays a pure reader of now-playing.json. A not-yet-
-    // tagged track (or unloaded DB) yields null here and the fields are
-    // simply omitted.
+    // its minimal metadata strip (genre · BPM · key · mood). Navidrome mode
+    // reads this from the local library DB (library.get(), synced by the
+    // tagger); MA mode has no local mood-tag cache to read a track back from,
+    // so getNowPlayingMeta() hits the live sidecar instead for that backend —
+    // see its comment in music/library.ts for why this isn't folded into the
+    // plain get() the picker's hot loops use. getNowPlaying() stays a pure
+    // reader of now-playing.json. A not-yet-tagged/not-found track yields null
+    // here and the fields are simply omitted.
     // Pick by active backend, not field truthiness — a stale now-playing.json
     // written before the ma-db-api.ts getAnnotatedUri fix (or a backend switch
     // mid-history) can leave a real value sitting under the OTHER backend's
@@ -169,7 +170,7 @@ router.get('/now-playing', async (req, res) => {
       ? (nowPlaying?.ma_id || nowPlaying?.subsonic_id)
       : (nowPlaying?.subsonic_id || nowPlaying?.ma_id);
     if (nowPlayingId) {
-      const rec = library.get(nowPlayingId);
+      const rec = await library.getNowPlayingMeta(nowPlayingId);
       if (rec) {
         nowPlaying.genre = rec.genre ?? null;
         nowPlaying.bpm = rec.bpm ?? null;
