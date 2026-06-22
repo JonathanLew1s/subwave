@@ -387,7 +387,14 @@ export function getAnnotatedUri(song: any): string {
     `title="${escAnnotate(song.title)}"`,
     `artist="${escAnnotate(song.artist)}"`,
     `album="${escAnnotate(song.album)}"`,
-    `subsonic_id="${escAnnotate(song.id)}"`,  // radio.liq reads this key for /cover/:id
+    // radio.liq's on_meta reads this exact key for MA-mode tracks and forwards
+    // it into now-playing.json as ma_id — NOT subsonic_id (that key is for the
+    // Navidrome backend's own getAnnotatedUri in subsonic.ts). Using the wrong
+    // key here meant every MA-mode now-playing payload had a real id sitting
+    // under subsonic_id and an always-empty ma_id, breaking the web player's
+    // cover art lookup (keyed by ma_id) and the controller's queue-matching
+    // (queue.ts reads np.ma_id) for the entire MA backend.
+    `ma_id="${escAnnotate(song.id)}"`,
   ];
   if (song.year) fields.push(`year="${escAnnotate(song.year)}"`);
   if (song.genre) fields.push(`genre="${escAnnotate(song.genre)}"`);
