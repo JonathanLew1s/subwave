@@ -247,6 +247,10 @@ export interface TrackDetail {
     peakDb: number | null;
     structure: Section[] | null;
     vocalRanges: Section[] | null;
+    // Coarse vocal/instrumental verdict (no time-coded ranges) — populated in
+    // MA mode from instrumentalness when vocalRanges itself is null, so the
+    // VOICE lane has something better to show than "not analysed".
+    vocalCoarse?: Vocal;
     pace: PaceSpan[] | null;
     keyRanges: KeyRange[] | null;
   };

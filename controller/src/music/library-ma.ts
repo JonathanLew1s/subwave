@@ -2,7 +2,7 @@
 // Called by library.ts when config.libraryBackend === 'ma-api'.
 // All data comes from the music-assistant-db-api sidecar over HTTP — no local SQLite.
 
-import { apiGet, toSong } from './ma-db-api.js';
+import { apiGet, toSong, resolveGenreRow, tracksByGenreId } from './ma-db-api.js';
 import type { FilterOpts, FilteredRow } from './library.js';
 
 // ---------------------------------------------------------------------------
@@ -17,29 +17,98 @@ let _stats = {
 };
 
 // ---------------------------------------------------------------------------
-// Mood → audio-feature energy range approximation.
-// MA's sonic_analysis energy tops out around 0.46 (vs Spotify's 0-1 scale).
-// Thresholds calibrated from actual distribution (p25=0.11, p50=0.16, p75=0.22).
+// Mood matching strategy — three different kinds of mood, three different
+// data sources. Verified live against the actual sidecar before picking any
+// of this (see docs/superpowers/specs — analysis coverage, real percentile
+// distributions, real genre taxonomy contents):
+//
+// 1. SONIC_MOODS — affect/energy concepts genuinely representable by audio
+//    features. Energy bands as before, PLUS valence (positive/negative
+//    affect) where it's the actual distinguishing axis — e.g. calm/
+//    reflective/rainy previously had near-identical energy bands and were
+//    barely distinguishable; valence is what actually separates "peaceful",
+//    "introspective", and "melancholic". Bands anchored to the real
+//    distribution from a 1000-track random sample (valence p25=0.11,
+//    p50=0.235, p75=0.41; energy p25=0.11, p50=0.15, p75=0.21 — consistent
+//    with the energy calibration already in place). Valence coverage is
+//    ~64% vs ~99% for energy, so these bands lean wide rather than tight —
+//    see MOOD_NEIGHBOURS_MA below for the thin-result safety net.
+// 2. GENRE_MOODS (cultural, spiritual) — not affect concepts at all; matched
+//    against the real /genres taxonomy (name + alias rollups) instead of any
+//    audio feature. cultural's genre list has real tracks today (reggae 145,
+//    gospel-adjacent etc.); spiritual's pool is thin (gospel=57, the only
+//    non-empty spiritual-adjacent genre) but real.
+// 3. festival/cooking/morning/evening are NOT in either map below:
+//    - festival/cooking: verified live there is no genre AND no clean
+//      affect/energy signature for these — they're activity/context labels
+//      with zero representable signal in this API. Left exactly as the
+//      original energy-only guess (see FESTIVAL_COOKING_ENERGY) rather than
+//      pretending a fix exists.
+//    - morning/evening: context.js already derives these from time-of-day,
+//      not track content — songsByMood returns [] for them rather than
+//      faking a per-track signal (see songsByMood below).
 // ---------------------------------------------------------------------------
-const MOOD_ENERGY: Record<string, [number | null, number | null]> = {
-  energetic:   [0.28, null],
-  workout:     [0.28, null],
-  driving:     [0.24, null],
-  festival:    [0.26, null],
-  celebratory: [0.26, null],
-  sunny:       [0.20, null],
-  morning:     [0.15, 0.28],
-  cooking:     [0.13, 0.26],
-  evening:     [null, 0.24],
-  romantic:    [null, 0.22],
-  cultural:    [0.15, 0.32],
-  spiritual:   [null, 0.22],
-  calm:        [null, 0.17],
-  focus:       [0.11, 0.24],
-  reflective:  [null, 0.20],
-  rainy:       [null, 0.17],
-  night:       [null, 0.20],
+
+type Band = [number | null, number | null];
+
+const SONIC_MOODS: Record<string, { energy: Band; valence?: Band }> = {
+  energetic:   { energy: [0.28, null] },
+  workout:     { energy: [0.28, null] },
+  driving:     { energy: [0.24, null] },
+  celebratory: { energy: [0.26, null], valence: [0.30, null] },
+  sunny:       { energy: [0.20, null], valence: [0.25, null] },
+  romantic:    { energy: [null, 0.22], valence: [0.20, null] },
+  calm:        { energy: [null, 0.17], valence: [0.15, 0.40] },
+  focus:       { energy: [0.11, 0.24] },
+  reflective:  { energy: [null, 0.20], valence: [null, 0.25] },
+  rainy:       { energy: [null, 0.17], valence: [null, 0.15] },
+  night:       { energy: [null, 0.20] },
 };
+
+// festival/cooking — no genre, no clean affect signal (verified live).
+// Unchanged from the original flat guess; not part of the valence rework.
+const FESTIVAL_COOKING_ENERGY: Record<string, Band> = {
+  festival: [0.26, null],
+  cooking:  [0.13, 0.26],
+};
+
+// cultural/spiritual — genre-taxonomy matches, verified against the real
+// /genres list + track counts (not invented): reggae/brazilian-music/cumbia/
+// flamenco/JùJú have real tracks; world-ethnic/afrobeats/middle-eastern/
+// indian-classical/raï/gnawa/klezmer exist in the taxonomy but are
+// currently empty (kept for when the library grows — matching costs nothing
+// extra, they just contribute 0 tracks today). spiritual's only non-empty
+// genre today is gospel.
+const GENRE_MOODS: Record<string, string[]> = {
+  cultural: [
+    'Reggae', 'Brazilian Music', 'Cumbia', 'Flamenco', 'JùJú',
+    'World/Ethnic', 'Afrobeats (West African urban/pop music)',
+    'Middle Eastern Music', 'Indian Classical', 'Raï', 'Gnawa', 'Klezmer',
+  ],
+  spiritual: ['Gospel', 'Church Music', 'Religion/Spirituality'],
+};
+
+// Moods with no per-track signal in MA mode — context.js already derives
+// these from time-of-day, not track content (see comment block above).
+const NO_TRACK_FILTER_MOODS = new Set(['morning', 'evening']);
+
+// Adjacent-mood widening, ported from library.ts's MOOD_NEIGHBOURS (the
+// Navidrome-mode mechanism) — MA mode never had this, so a tight energy+
+// valence box could starve a sparsely-analysed mood with zero fallback.
+// Only sonic moods need it (genre moods' real gap, if any, is a genre
+// problem, not solvable by widening to an unrelated mood).
+const MOOD_NEIGHBOURS_MA: Record<string, string[]> = {
+  driving:     ['energetic', 'focus'],
+  focus:       ['calm', 'reflective'],
+  energetic:   ['workout', 'celebratory'],
+  reflective:  ['calm', 'night'],
+  celebratory: ['energetic'],
+  romantic:    ['calm', 'reflective'],
+  sunny:       ['energetic', 'calm'],
+  rainy:       ['calm', 'reflective'],
+  night:       ['reflective', 'calm'],
+};
+const MOOD_MIN_EXACT_MA = 12;
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -119,16 +188,20 @@ function energyLabel(e: number): string {
 
 export async function load(): Promise<void> {
   try {
-    const [h, a] = await Promise.all([
+    const [h, a, g] = await Promise.all([
       apiGet('/health/detailed'),
       apiGet('/artists', { limit: 1 }),
+      // health/detailed has never carried a genre breakdown (only track_count
+      // + analysis_coverage) — byGenre was silently always {} before the real
+      // /genres taxonomy endpoint existed to source it from.
+      apiGet('/genres', { limit: 1000 }).catch(() => ({ items: [] })),
     ]);
     // health/detailed returns { track_count, analysis_coverage: { bpm, clap, sonic, loudness } }
     // /artists?limit=1 returns { total } — the full artist count for recency-window scaling.
     _stats = {
       total: h.track_count ?? h.total_tracks ?? h.total ?? 0,
       distinctArtists: h.total_artists ?? a.total ?? 0,
-      byGenre: h.genres ?? {},
+      byGenre: Object.fromEntries((g.items ?? []).map((x: any) => [x.name, x.track_count ?? 0])),
       updatedAt: new Date().toISOString(),
     };
   } catch {
@@ -137,9 +210,14 @@ export async function load(): Promise<void> {
 }
 
 export function stats() {
-  // byMood: the MOOD_ENERGY keys are the moods MA can serve via energy-band
-  // filtering — this gives the UI an accurate "N moods in use" count.
-  const byMood = Object.fromEntries(Object.keys(MOOD_ENERGY).map(k => [k, 1]));
+  // byMood: every mood key MA mode can serve via SOME path — sonic
+  // energy(+valence) bands, the festival/cooking legacy energy guess, or
+  // genre-taxonomy matching. morning/evening are deliberately excluded —
+  // they have no per-track filter in MA mode (see NO_TRACK_FILTER_MOODS).
+  const byMood = Object.fromEntries(
+    [...Object.keys(SONIC_MOODS), ...Object.keys(FESTIVAL_COOKING_ENERGY), ...Object.keys(GENRE_MOODS)]
+      .map(k => [k, 1]),
+  );
   return {
     total: _stats.total,
     distinctArtists: _stats.distinctArtists,
@@ -153,19 +231,73 @@ export function stats() {
   };
 }
 
-export async function songsByMood(mood: string | null | undefined): Promise<any[]> {
-  if (!mood) return [];
-  const [energyMin, energyMax] = MOOD_ENERGY[mood] ?? [null, null];
-  if (energyMin == null && energyMax == null) return [];
+// Energy(+valence) band query against /tracks, random order, capped at 200 —
+// same shape the original energy-only version used.
+async function tracksByBand(energy: Band, valence?: Band): Promise<any[]> {
+  const [energyMin, energyMax] = energy;
+  if (energyMin == null && energyMax == null && !valence) return [];
   try {
     const params: Record<string, any> = { order: 'random', limit: 200, include: 'analysis' };
     if (energyMin != null) params.energy_min = energyMin;
     if (energyMax != null) params.energy_max = energyMax;
+    if (valence) {
+      const [valenceMin, valenceMax] = valence;
+      if (valenceMin != null) params.valence_min = valenceMin;
+      if (valenceMax != null) params.valence_max = valenceMax;
+    }
     const data = await apiGet<{ total: number; items: any[] }>('/tracks', params);
     return (data.items ?? []).map(toLibraryTrack);
   } catch {
     return [];
   }
+}
+
+// Genre-taxonomy match for cultural/spiritual — union of each mood's real
+// genre list via the /genres/:id/tracks join (resolveGenreRow + tracksByGenreId,
+// same path getSongsByGenre uses). Genres that don't resolve (e.g. not yet
+// used in this library) or error out simply contribute nothing.
+async function tracksByGenreList(genreNames: string[]): Promise<any[]> {
+  const seen = new Set<string>();
+  const out: any[] = [];
+  for (const name of genreNames) {
+    const hit = await resolveGenreRow(name);
+    if (!hit) continue;
+    for (const t of await tracksByGenreId(hit.id, 200)) {
+      if (seen.has(t.id)) continue;
+      seen.add(t.id);
+      out.push(toLibraryTrack(t));
+    }
+  }
+  return out;
+}
+
+export async function songsByMood(mood: string | null | undefined): Promise<any[]> {
+  if (!mood) return [];
+  if (NO_TRACK_FILTER_MOODS.has(mood)) return [];
+
+  if (GENRE_MOODS[mood]) return tracksByGenreList(GENRE_MOODS[mood]);
+
+  const festivalCooking = FESTIVAL_COOKING_ENERGY[mood];
+  if (festivalCooking) return tracksByBand(festivalCooking);
+
+  const sonic = SONIC_MOODS[mood];
+  if (!sonic) return [];
+
+  const exact = await tracksByBand(sonic.energy, sonic.valence);
+  if (exact.length >= MOOD_MIN_EXACT_MA) return exact;
+
+  const seen = new Set(exact.map((t) => t.id));
+  const widened = [...exact];
+  for (const neighbour of MOOD_NEIGHBOURS_MA[mood] || []) {
+    const nSonic = SONIC_MOODS[neighbour];
+    if (!nSonic) continue;
+    for (const t of await tracksByBand(nSonic.energy, nSonic.valence)) {
+      if (seen.has(t.id)) continue;
+      seen.add(t.id);
+      widened.push(t);
+    }
+  }
+  return widened;
 }
 
 export async function songsByMoods(moods: string[] | null | undefined): Promise<any[]> {
@@ -268,7 +400,7 @@ export async function getNowPlayingMeta(id: string): Promise<{
     const t = await apiGet<any>(`/tracks/${id}`, { include: 'analysis' });
     if (!t) return null;
     return {
-      genre: t.genre ?? null,
+      genre: t.genres?.[0] ?? null,
       bpm: t.analysis?.bpm != null ? Math.round(t.analysis.bpm * 10) / 10 : null,
       musicalKey: t.analysis?.camelot ?? t.analysis?.key ?? null,
       energy: t.analysis?.energy != null ? energyLabel(t.analysis.energy) : null,
@@ -334,7 +466,7 @@ function shapeObservatoryTrack(t: any): any {
     artist: t.artist ?? (t.artists?.[0] ?? null),
     album: t.album ?? null,
     year: t.year ?? null,
-    genre: t.genre ?? null,
+    genre: t.genres?.[0] ?? null,
     durationSec: t.duration ?? null,
     moods: [],
     energy: t.analysis?.energy != null ? energyLabel(t.analysis.energy) : null,
