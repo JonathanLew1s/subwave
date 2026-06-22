@@ -27,16 +27,48 @@ export async function observatoryMa(max: number, hardMax: number) {
   };
 }
 
+// Downsamples the sidecar's raw rms_energy time series (~1800 evenly-spaced
+// samples spanning the track, values already 0..1) into a bounded number of
+// PaceSpan buckets for the dossier's SONG SHAPE curve. Chunk-averages rather
+// than dropping samples, so a quiet passage with a brief loud transient still
+// shows up rather than being skipped by a stride. Returns null below
+// MIN_RMS_SAMPLES — too few points to draw a meaningful curve.
+const PACE_BUCKETS = 90;
+const MIN_RMS_SAMPLES = 8;
+function paceFromRmsEnergy(rms: number[] | null | undefined, durationMs: number): { startMs: number; endMs: number; value: number }[] | null {
+  if (!Array.isArray(rms) || rms.length < MIN_RMS_SAMPLES || durationMs <= 0) return null;
+  const buckets = Math.min(PACE_BUCKETS, rms.length);
+  const spans: { startMs: number; endMs: number; value: number }[] = [];
+  for (let i = 0; i < buckets; i++) {
+    const lo = Math.floor((i / buckets) * rms.length);
+    const hi = Math.max(lo + 1, Math.floor(((i + 1) / buckets) * rms.length));
+    const slice = rms.slice(lo, hi);
+    const avg = slice.reduce((s, v) => s + v, 0) / slice.length;
+    spans.push({
+      startMs: Math.round((i / buckets) * durationMs),
+      endMs: Math.round(((i + 1) / buckets) * durationMs),
+      value: Math.max(0, Math.min(1, avg)),
+    });
+  }
+  return spans;
+}
+
 // GET /library/observatory/track/:id, ma-api branch — tracks live in the
 // sidecar's SQLite library, not the local library-db. Pulls full analysis
 // (?include=analysis is required by the sidecar — omitting it silently nulls
 // every analysis field) plus a CLAP-similarity mixNext via tracksLikeThis.
+// structure/vocalRanges/keyRanges have no MA-sidecar equivalent (no section,
+// vocal-activity, or key-modulation detection there) and stay null — but
+// rms_energy gives us a real pace curve, so SONG SHAPE isn't unconditionally
+// empty for every MA-backend track (see paceFromRmsEnergy above).
 export async function observatoryTrackMa(id: string) {
   const t = await maDbApi.apiGet(`/tracks/${id}`, { include: 'analysis' });
   const clap: number[] | null = t.analysis?.clap_embedding ?? null;
   const instrm: number | null = t.analysis?.instrumentalness ?? null;
   const energy: number | null = t.analysis?.energy ?? null;
   const energyLabel = energy == null ? null : energy >= 0.22 ? 'high' : energy >= 0.11 ? 'medium' : 'low';
+  const durationMs = (t.duration ?? 0) * 1000;
+  const pace = paceFromRmsEnergy(t.analysis?.rms_energy, durationMs);
   const mixNext = (await library.tracksLikeThis(id, 8)).map((n: any) => ({
     id: n.id,
     title: n.title,
@@ -72,9 +104,10 @@ export async function observatoryTrackMa(id: string) {
       analysisVersion: null,
       peakDb: null,
       structure: null,
-      // null = not analysed (no time-range data from MA)
+      // null = not analysed (no section/vocal/key-modulation detection on the
+      // MA sidecar). pace IS available — derived from rms_energy above.
       vocalRanges: null,
-      pace: null,
+      pace,
       keyRanges: null,
     },
     textEmbedding: null,
