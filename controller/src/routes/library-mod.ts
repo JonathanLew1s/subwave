@@ -62,7 +62,12 @@ function paceFromRmsEnergy(rms: number[] | null | undefined, durationMs: number)
 // rms_energy gives us a real pace curve, so SONG SHAPE isn't unconditionally
 // empty for every MA-backend track (see paceFromRmsEnergy above).
 export async function observatoryTrackMa(id: string) {
-  const t = await maDbApi.apiGet(`/tracks/${id}`, { include: 'analysis' });
+  // clap_embedding is gated behind its own include flag — `analysis` alone
+  // always comes back null for it (verified live: a track with a confirmed
+  // real 1024-dim CLAP vector under ?include=analysis,clap returns none
+  // under ?include=analysis), so the dossier's AUDIO fingerprint had never
+  // actually rendered for any MA track until this was added.
+  const t = await maDbApi.apiGet(`/tracks/${id}`, { include: 'analysis,clap' });
   const clap: number[] | null = t.analysis?.clap_embedding ?? null;
   const instrm: number | null = t.analysis?.instrumentalness ?? null;
   const energy: number | null = t.analysis?.energy ?? null;
