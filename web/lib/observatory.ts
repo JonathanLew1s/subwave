@@ -87,25 +87,32 @@ export function useTrackDetail(adminFetch: AdminFetch) {
   const cache = useRef<Map<string, TrackDetail>>(new Map());
   const [detail, setDetail] = useState<TrackDetail | null>(null);
   const [loadingId, setLoadingId] = useState<string | null>(null);
+  // Keyed by track id so a stale error for a previously-selected node can't
+  // bleed onto the next one — checked against `selected.id` by the caller the
+  // same way `detail`/`loadingId` already are.
+  const [errorId, setErrorId] = useState<{ id: string; message: string } | null>(null);
 
   const fetchDetail = useCallback(
     async (id: string | null) => {
       if (!id) {
         setDetail(null);
         setLoadingId(null);
+        setErrorId(null);
         return;
       }
       const cached = cache.current.get(id);
       if (cached) {
         setDetail(cached);
         setLoadingId(null);
+        setErrorId(null);
         return;
       }
       setDetail(null);
+      setErrorId(null);
       setLoadingId(id);
       try {
         const res = await adminFetch(`/library/observatory/track/${encodeURIComponent(id)}`);
-        if (!res.ok) throw new Error(String(res.status));
+        if (!res.ok) throw new Error(`controller error (${res.status})`);
         const body = (await res.json()) as TrackDetail;
         cache.current.set(id, body);
         // Only commit if the user hasn't moved on to another node meanwhile.
@@ -113,12 +120,17 @@ export function useTrackDetail(adminFetch: AdminFetch) {
           if (cur === id) setDetail(body);
           return cur === id ? null : cur;
         });
-      } catch {
+      } catch (err) {
+        // Surfaced, not swallowed — a failed fetch must look different from a
+        // track that genuinely has no analysis, or there's no way to tell a
+        // backend outage from "nothing to show" once you're looking at the UI.
+        const message = err instanceof Error ? err.message : 'failed to load track detail';
         setLoadingId((cur) => (cur === id ? null : cur));
+        setErrorId({ id, message });
       }
     },
     [adminFetch],
   );
 
-  return { detail, loadingId, fetchDetail };
+  return { detail, loadingId, errorId, fetchDetail };
 }

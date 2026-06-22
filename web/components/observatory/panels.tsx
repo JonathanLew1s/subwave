@@ -478,6 +478,8 @@ export function Dossier({
   track,
   detail,
   loading,
+  error,
+  onRetry,
   mixNodes,
   onSelect,
   onClose,
@@ -485,6 +487,12 @@ export function Dossier({
   track: ObsTrack;
   detail: TrackDetail | null;
   loading: boolean;
+  // Set when the detail fetch itself failed (network/5xx/etc) — distinct from
+  // a successful response that simply has no analysis. Without this the two
+  // cases were indistinguishable in the UI: a backend hiccup looked exactly
+  // like "this track genuinely has no acoustic data."
+  error?: string | null;
+  onRetry?: () => void;
   mixNodes: ObsTrack[];
   onSelect: (t: ObsTrack) => void;
   onClose: () => void;
@@ -502,6 +510,19 @@ export function Dossier({
         </button>
         <span className="t-caption ad-muted">TRACK DOSSIER{loading ? ' · LOADING…' : ''}</span>
       </div>
+
+      {error && (
+        <Card title="LOAD FAILED" sub="TRACK DETAIL">
+          <div className="t-caption ad-muted" style={{ marginBottom: 10 }}>
+            {error}
+          </div>
+          {onRetry && (
+            <button className="dossier-back" onClick={onRetry}>
+              ↻ RETRY
+            </button>
+          )}
+        </Card>
+      )}
 
       <div className="dossier-title-block">
         <div className="t-caption ad-muted">
