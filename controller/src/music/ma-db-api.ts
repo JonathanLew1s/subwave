@@ -59,7 +59,10 @@ export function toSong(t: any): any {
     artist: t.artist ?? '',
     album: t.album ?? '',
     year: t.year ?? null,
-    genre: t.genre ?? null,
+    // The API moved from a singular `genre` string to a `genres` array (full
+    // tag list, not just the first) — take the first tag here to keep the
+    // singular `genre` contract every other backend/caller expects.
+    genre: t.genres?.[0] ?? null,
     duration: t.duration ?? null,
     path: t.file_path ?? null,   // relative path — used by getLocalPath / getAnnotatedUri
     coverArt: String(t.id),      // getCoverArtUrl / /cover/:id use this
@@ -99,25 +102,113 @@ export async function getRandomSongs({ size = 20, genre }: { size?: number; genr
   return (data.items ?? []).map(toSong);
 }
 
-export async function getSongsByGenre(genre: string, { count = 20 } = {}): Promise<any[]> {
-  const data = await apiGet('/tracks', { genre, order: 'random', limit: count });
-  return (data.items ?? []).map(toSong);
+// The sidecar's real genre taxonomy (/genres) — canonical name + alias
+// rollups (e.g. "ambient" aliases "Ambient Dub", "Kankyō Ongaku") backed by a
+// real track-membership join, distinct from the flat tag array on Track.genre.
+// ~147 genres today, well under the endpoint's max limit=1000, so one request
+// covers the whole taxonomy. Cached briefly — the sidecar's own data only
+// changes on the hourly DB-clone refresh, and this list backs every genre
+// lookup the picker/agent make per pick.
+const GENRES_CACHE_TTL_MS = 10 * 60 * 1000;
+let genresCache: { at: number; rows: any[] } | null = null;
+
+async function allGenres(): Promise<any[]> {
+  if (genresCache && Date.now() - genresCache.at < GENRES_CACHE_TTL_MS) return genresCache.rows;
+  const data = await apiGet('/genres', { limit: 1000 });
+  const rows = data.items ?? [];
+  genresCache = { at: Date.now(), rows };
+  return rows;
 }
 
 export async function getGenres(): Promise<any[]> {
   try {
-    const data = await apiGet('/health/detailed');
-    const genres: Record<string, number> = data.genres ?? {};
-    return Object.entries(genres)
-      .sort((a, b) => b[1] - a[1])
-      .map(([value, songCount]) => ({ value, songCount }));
+    const genres = await allGenres();
+    return genres
+      .map((g: any) => ({ value: g.name, songCount: g.track_count ?? 0 }))
+      .sort((a, b) => b.songCount - a.songCount);
   } catch {
     return [];
   }
 }
 
+// Fuzzy-match free text ("hip hop", "ambient") against the real genre
+// taxonomy's name + alias rollups. Exact normalised match (against name or
+// any alias) wins, then substring either way. Returns the matching genre row
+// ({id, name}) or null. Shared by resolveGenreName (which only needs the
+// name), getSongsByGenre, and library-ma.ts's genre-based mood matching
+// (cultural/spiritual) — all need the id for /genres/:id/tracks, the real
+// membership join.
+export async function resolveGenreRow(name: string): Promise<{ id: number; name: string } | null> {
+  if (!name) return null;
+  const norm = (s: string) => String(s).toLowerCase().replace(/[^a-z0-9]/g, '');
+  const target = norm(name);
+  if (!target) return null;
+  try {
+    const genres = await allGenres();
+    const candidates = genres.map((g: any) => ({
+      id: g.id as number,
+      name: g.name as string,
+      nameKey: norm(g.name),
+      aliasKeys: (g.aliases ?? []).map(norm),
+    }));
+    // Priority matters: the taxonomy's alias lists overlap messily (verified
+    // live — "gospel" the genre has 57 tracks and lists "Church Music" as an
+    // alias, while "church music" the genre has 0 tracks and separately
+    // lists "Gospel" as one of ITS aliases). A canonical-name match is an
+    // unambiguous identity match and must win over a same-text alias hit on
+    // a different genre, or matching depends on array order, not intent.
+    let hit = candidates.find((g) => g.nameKey === target);
+    if (!hit) hit = candidates.find((g) => g.aliasKeys.includes(target));
+    if (!hit) {
+      hit = candidates.find((g) =>
+        (g.nameKey && (g.nameKey.includes(target) || target.includes(g.nameKey)))
+        || g.aliasKeys.some((k: string) => k && (k.includes(target) || target.includes(k))));
+    }
+    return hit ? { id: hit.id, name: hit.name } : null;
+  } catch {
+    return null;
+  }
+}
+
+// Returns the canonical genre name or null — mirrors subsonic.ts's
+// resolveGenreName contract exactly (previously this always returned the
+// input unchanged, never validating it against the library at all).
 export async function resolveGenreName(name: string): Promise<string | null> {
-  return name; // MA genre names are already normalised
+  const hit = await resolveGenreRow(name);
+  return hit?.name ?? null;
+}
+
+// /tracks?genre= matches only the literal, case-sensitive tag string in a
+// track's flat genres array — verified live it undercounts badly (77 vs the
+// real 145 for "reggae", because of casing variants the flat tag never
+// normalises and alias rollups it never applies). The taxonomy join
+// (/genres/:id/tracks) is the real, complete membership list — go through
+// genre-id resolution and use that instead.
+//
+// /genres/:id/tracks only accepts offset/limit (verified against the
+// handler — no order/dir param exists), so it always returns the same
+// media_id-ordered slice. Fetch a wide-enough batch and shuffle client-side
+// so repeat calls (every pick) don't hand back the identical first N tracks.
+const GENRE_TRACKS_FETCH_CAP = 200;
+
+export async function tracksByGenreId(id: number, count = 20): Promise<any[]> {
+  try {
+    const data = await apiGet(`/genres/${id}/tracks`, { limit: GENRE_TRACKS_FETCH_CAP });
+    const items: any[] = data.items ?? [];
+    for (let i = items.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [items[i], items[j]] = [items[j], items[i]];
+    }
+    return items.slice(0, count).map(toSong);
+  } catch {
+    return [];
+  }
+}
+
+export async function getSongsByGenre(genre: string, { count = 20 } = {}): Promise<any[]> {
+  const hit = await resolveGenreRow(genre);
+  if (!hit) return [];
+  return tracksByGenreId(hit.id, count);
 }
 
 export async function getSimilarSongs(id: string, { count = 20 } = {}): Promise<any[]> {
@@ -320,8 +411,13 @@ export async function getRecentSongsByArtist(
   }
 }
 
-export async function getLyrics(_songId: string): Promise<string> {
-  return '';
+export async function getLyrics(songId: string): Promise<string> {
+  try {
+    const t = await apiGet(`/tracks/${songId}`, { include: 'lyrics' });
+    return t.lyrics ?? '';
+  } catch {
+    return '';
+  }
 }
 
 export async function* iterateAllSongs(): AsyncGenerator<any> {

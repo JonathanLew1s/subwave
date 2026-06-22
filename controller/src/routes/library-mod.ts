@@ -85,7 +85,7 @@ export async function observatoryTrackMa(id: string) {
       artist: t.artist ?? null,
       album: t.album ?? null,
       year: t.year ?? null,
-      genre: t.genre ?? null,
+      genre: t.genres?.[0] ?? null,
       durationSec: t.duration ?? null,
       bpm: t.analysis?.bpm != null ? Math.round(t.analysis.bpm * 10) / 10 : null,
       musicalKey: t.analysis?.camelot ?? t.analysis?.key ?? null,
@@ -107,6 +107,11 @@ export async function observatoryTrackMa(id: string) {
       // null = not analysed (no section/vocal/key-modulation detection on the
       // MA sidecar). pace IS available — derived from rms_energy above.
       vocalRanges: null,
+      // Coarse fallback for the SONG SHAPE VOICE lane when vocalRanges is null
+      // — same instrumentalness threshold as shapeObservatoryTrack's `vocal`
+      // field (library-ma.ts), so the dossier stops contradicting the bulk
+      // list's own vocal/instrumental badge for the same track.
+      vocalCoarse: instrm == null ? null : instrm > 0.5 ? 'instrumental' : 'vocal',
       pace,
       keyRanges: null,
     },
