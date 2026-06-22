@@ -253,7 +253,11 @@ function SongShape({ detail, durationSec }: { detail: TrackDetail; durationSec: 
         <span className="ss-label">VOICE</span>
         <div className="ss-lane ss-lane-thin">
           {vocal == null ? (
-            <span className="ss-note">not analysed</span>
+            d.vocalCoarse ? (
+              <span className="ss-note">{d.vocalCoarse} (no timing data)</span>
+            ) : (
+              <span className="ss-note">not analysed</span>
+            )
           ) : vocal.length === 0 ? (
             <span className="ss-note">instrumental</span>
           ) : (
@@ -284,6 +288,10 @@ function SongShape({ detail, durationSec }: { detail: TrackDetail; durationSec: 
                 title={`${k.tonic} ${k.mode}`}
               />
             ))
+          ) : d.musicalKey ? (
+            // No key-modulation timeline (e.g. MA mode) — show the track's
+            // static key instead of a bare dash, matching the header strip.
+            <span className="ss-note">{d.musicalKey} (no modulation data)</span>
           ) : (
             <span className="ss-note">—</span>
           )}
@@ -611,14 +619,25 @@ export function Dossier({
       )}
 
       <Card title="EMBEDDINGS" sub="LEARNED VECTORS">
-        <Fingerprint
-          vector={detail?.textEmbedding}
-          seed={track._eseed}
-          dim={768}
-          cols={48}
-          label="TEXT"
-          meta={detail?.textEmbedding ? `${detail.textEmbedding.length}d · ${d?.model || 'model'}` : 'no vector'}
-        />
+        {detail?.textEmbedding ? (
+          <Fingerprint
+            vector={detail.textEmbedding}
+            seed={track._eseed}
+            dim={768}
+            cols={48}
+            label="TEXT"
+            meta={`${detail.textEmbedding.length}d · ${d?.model || 'model'}`}
+          />
+        ) : (
+          <div className="fp">
+            <div className="fp-head">
+              <span className="t-caption" style={{ fontWeight: 700 }}>
+                TEXT
+              </span>
+              <span className="t-caption ad-muted">no vector</span>
+            </div>
+          </div>
+        )}
         {detail?.audioEmbedding ? (
           <>
             <div style={{ height: 14 }} />
