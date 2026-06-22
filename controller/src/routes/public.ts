@@ -155,11 +155,15 @@ router.get('/now-playing', async (req, res) => {
     ]);
     // Enrich the live track with the analysis/tag data the player surfaces in
     // its minimal metadata strip (genre · BPM · key · mood). All of it lives
-    // in the library DB keyed by subsonic_id; getNowPlaying() stays a pure
-    // reader of now-playing.json. A not-yet-tagged track (or unloaded DB)
-    // yields null here and the fields are simply omitted.
-    if (nowPlaying?.subsonic_id) {
-      const rec = library.get(nowPlaying.subsonic_id);
+    // in the library DB, keyed by whichever id the active backend uses
+    // (subsonic_id for Navidrome, ma_id for Music Assistant) — library.get()
+    // itself is backend-agnostic, it just looks up whatever id it's given.
+    // getNowPlaying() stays a pure reader of now-playing.json. A not-yet-
+    // tagged track (or unloaded DB) yields null here and the fields are
+    // simply omitted.
+    const nowPlayingId = nowPlaying?.subsonic_id || nowPlaying?.ma_id;
+    if (nowPlayingId) {
+      const rec = library.get(nowPlayingId);
       if (rec) {
         nowPlaying.genre = rec.genre ?? null;
         nowPlaying.bpm = rec.bpm ?? null;
