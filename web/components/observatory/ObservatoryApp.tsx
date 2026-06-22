@@ -72,7 +72,7 @@ export default function ObservatoryApp({ adminFetch }: { adminFetch: AdminFetch 
     return Number.isFinite(stored) && stored > 0 ? stored : DEFAULT_MAX;
   });
   const { data: lib, loading, error } = useObservatory(adminFetch, true, maxNodes);
-  const { detail, loadingId, fetchDetail } = useTrackDetail(adminFetch);
+  const { detail, loadingId, errorId, fetchDetail } = useTrackDetail(adminFetch);
 
   const [q, setQ] = useState('');
   const [colorBy, setColorBy] = useState<ColorBy>('energy');
@@ -404,6 +404,8 @@ export default function ObservatoryApp({ adminFetch }: { adminFetch: AdminFetch 
                 track={selected}
                 detail={detail && detail.track.id === selected.id ? detail : null}
                 loading={loadingId === selected.id}
+                error={errorId && errorId.id === selected.id ? errorId.message : null}
+                onRetry={() => fetchDetail(selected.id)}
                 mixNodes={mixNodes}
                 onSelect={setSelected}
                 onClose={() => setSelected(null)}
