@@ -25,8 +25,18 @@ import * as picker from '../music/picker.js';
 import { refreshPopularity } from '../music/popularity.js';
 import { recencyWindowsForLibrary } from '../music/recency.js';
 import { buildMaShortlist } from '../music/ma-candidate-pool.js';
-import { computeThemeCentroid } from '../music/theme-centroid.js';
+import { buildExemplarProfile, type ExemplarProfile } from '../music/theme-centroid.js';
 import * as pickerShadowLog from './picker-shadow-log.js';
+
+// Shared by refreshAutoPlaylistInner (drives the real auto.m3u write) and
+// maybeRunAutoPlaylistShadow (logs a comparison) so they can never compute
+// two different profiles for the same show. null = no/too-few usable
+// exemplars — callers fall back to today's flat mood-band behaviour.
+async function resolveExemplarProfile(exemplarTrackIds: string[]): Promise<ExemplarProfile | null> {
+  if (config.libraryBackend !== 'ma-api' || !exemplarTrackIds.length) return null;
+  const pickerSettings = settings.get().picker;
+  return buildExemplarProfile(exemplarTrackIds, pickerSettings.maShortlist.themeCentroid);
+}
 
 const TARGET_POOL = 50;
 
@@ -43,7 +53,7 @@ async function refreshAutoPlaylistInner() {
   const ctx = await getFullContext();
 
   const activeShow = settings.resolveActiveShow();
-  const { maxDurationSec, excludePatterns } = settings.getPickerConfig(activeShow);
+  const { maxDurationSec, minDurationSec, excludePatterns } = settings.getPickerConfig(activeShow);
 
   const showMoods: string[] = activeShow?.moods?.length
     ? activeShow.moods
@@ -60,11 +70,37 @@ async function refreshAutoPlaylistInner() {
   let rawCandidates: any[];
   let sources: Record<string, number>;
 
-  if (config.libraryBackend === 'ma-api' && showMoods.length > 0) {
-    // MA mode: build the pool directly from all show moods + random diversity.
-    // buildCandidates is designed for single-pick (recent/frequent albums, LastFM
-    // artist graph) — none of those are mood-aligned. For the fallback playlist
-    // we want the full mood-appropriate slice of the library.
+  const exemplarProfile = config.libraryBackend === 'ma-api' && showMoods.length > 0
+    ? await resolveExemplarProfile(activeShow?.exemplarTrackIds ?? [])
+    : null;
+
+  if (exemplarProfile) {
+    // MA mode with a usable exemplar profile: the genre-palette + CLAP-
+    // similarity shortlist (validated live — see
+    // docs/superpowers/specs/2026-06-23-show-redesign-and-genre-aware-picker-design.md)
+    // replaces the flat mood+random union below for shows that have set
+    // exemplars. Falls through to that flat union for shows without them.
+    const pickerSettings = settings.get().picker;
+    const shortlist = await buildMaShortlist({
+      showMoods,
+      currentTrack: queue.current?.track ?? null,
+      recentIds,
+      recentArtists,
+      justPlayedArtists,
+      config: pickerSettings.maShortlist,
+      exemplarProfile,
+    });
+    const randomTracks = await subsonic.getRandomSongs({ size: 20 }); // small diversity buffer
+    const shortlistPool = shortlist.map((e: any) => ({ ...e.track, _source: e.slot }));
+    const randPool = randomTracks.map((t: any) => ({ ...t, _source: 'random' }));
+    rawCandidates = [...shortlistPool, ...randPool];
+    sources = { ...Object.fromEntries(['theme', 'flow', 'discovery', 'oldie'].map((s) => [s, shortlist.filter((e: any) => e.slot === s).length])), random: randPool.length };
+  } else if (config.libraryBackend === 'ma-api' && showMoods.length > 0) {
+    // MA mode without exemplars: build the pool directly from all show moods
+    // + random diversity. buildCandidates is designed for single-pick
+    // (recent/frequent albums, LastFM artist graph) — none of those are
+    // mood-aligned. For the fallback playlist we want the full
+    // mood-appropriate slice of the library.
     const [moodTracks, randomTracks] = await Promise.all([
       library.songsByMoods(showMoods),   // all show moods, energy-band filtered
       subsonic.getRandomSongs({ size: 50 }), // diversity buffer
@@ -83,7 +119,7 @@ async function refreshAutoPlaylistInner() {
   }
 
   const filtered = rawCandidates.filter((c: any) =>
-    (!c.duration || c.duration <= maxDurationSec) && isRadioPickable(c.title ?? '', c.album, excludePatterns, c.genre));
+    (!c.duration || (c.duration <= maxDurationSec && c.duration >= minDurationSec)) && isRadioPickable(c.title ?? '', c.album, excludePatterns, c.genre));
   const candidates = filtered.length > 0 ? filtered : rawCandidates;
 
   const poolArray = pool.buildSequencedPlaylist(candidates, TARGET_POOL, {
@@ -102,10 +138,16 @@ async function refreshAutoPlaylistInner() {
     ` of ${Object.entries(sources).map(([k, v]) => `${k}=${v}`).join(' ')}` +
     `, moods=${showMoods.join('+') || `none/popularity (${ctx.dominantMood || 'n/a'})`})`);
 
-  maybeRunAutoPlaylistShadow(
-    showMoods, activeShow?.id ?? null, activeShow?.exemplarTrackIds ?? [], fromSource,
-    recentIds, recentArtists, justPlayedArtists,
-  ).catch(() => {});
+  // Skip the shadow comparison when the live path already used the
+  // exemplar shortlist directly — it would just be comparing the shortlist
+  // against itself. Shadow logging is only informative for shows that
+  // don't have exemplars yet (it shows what adding them would change).
+  if (!exemplarProfile) {
+    maybeRunAutoPlaylistShadow(
+      showMoods, activeShow?.id ?? null, activeShow?.exemplarTrackIds ?? [], fromSource,
+      recentIds, recentArtists, justPlayedArtists,
+    ).catch(() => {});
+  }
 }
 
 // Shadow-mode comparison for the auto.m3u path — computes what the
@@ -129,10 +171,8 @@ async function maybeRunAutoPlaylistShadow(
   const pickerSettings = settings.get().picker;
   if (!pickerSettings?.maShortlist?.autoPlaylistShadowEnabled || config.libraryBackend !== 'ma-api') return;
   try {
-    const themeCentroid = exemplarTrackIds.length
-      ? await computeThemeCentroid(exemplarTrackIds, pickerSettings.maShortlist.themeCentroid)
-      : null;
-    if (!themeCentroid) return; // nothing to compare without exemplars — not an error
+    const exemplarProfile = await resolveExemplarProfile(exemplarTrackIds);
+    if (!exemplarProfile) return; // nothing to compare without exemplars — not an error
 
     const shortlist = await buildMaShortlist({
       showMoods,
@@ -141,15 +181,14 @@ async function maybeRunAutoPlaylistShadow(
       recentArtists,
       justPlayedArtists,
       config: pickerSettings.maShortlist,
-      themeCentroid,
-      themeCentroidConfig: pickerSettings.maShortlist.themeCentroid,
+      exemplarProfile,
     });
 
     pickerShadowLog.record({
       kind: 'auto-playlist',
       t: new Date().toISOString(),
       show: activeShowId,
-      themeCentroidExemplars: themeCentroid.exemplarCount,
+      exemplarCount: exemplarProfile.exemplarCount,
       liveComposition,
       gatedShortlist: shortlist.map((e) => ({
         id: e.track.id, title: e.track.title, artist: e.track.artist, year: e.track.year,

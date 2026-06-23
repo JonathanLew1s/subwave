@@ -11,9 +11,10 @@
 // never the process.
 
 import * as library from './library.js';
+import { getClapEmbedding } from './library-ma.js';
 import { bpmCompat, keyCompat } from './mix.js';
 import { filterPickerCandidates, artistKey, coreArtistKey } from './recency.js';
-import { gateByCentroid } from './theme-centroid.js';
+import { gateByExemplarProfile, exemplarSimilarity, type ExemplarProfile } from './theme-centroid.js';
 
 export interface ShortlistSlotConfig {
   targetSize: number;
@@ -38,25 +39,26 @@ export interface BuildShortlistArgs {
   justPlayedArtists: Set<string>;
   config: ShortlistSlotConfig;
   // Computed once per call by the caller (it needs settings/show context this
-  // module doesn't otherwise touch) via theme-centroid.ts. null/absent =
-  // today's flat energy-band behaviour, fully backward compatible.
-  themeCentroid?: import('./theme-centroid.js').ThemeCentroid | null;
-  themeCentroidConfig?: Pick<import('./theme-centroid.js').ThemeCentroidConfig, 'minPoolSize' | 'maxThreshold'>;
+  // module doesn't otherwise touch) via theme-centroid.ts's buildExemplarProfile.
+  // null/absent = today's flat energy-band behaviour, fully backward compatible.
+  exemplarProfile?: ExemplarProfile | null;
 }
 
-// 0..1 — how close a candidate's energy sits to the show's mood band. Reuses
-// the same _energyRaw scalar the MA energy-band filter already produces;
-// candidates with no analysis (no _energyRaw) get a neutral 0.5 rather than
-// being penalised — partial CLAP/sonic coverage (~20% of the library today)
-// must never zero out a track that's otherwise on-brief.
-function moodFit(track: any): number {
-  // songsByMood already filters server-side to the show's mood/energy band
-  // (energy_min/energy_max), so every candidate here is already in-band —
-  // this is a flat binary signal (analysed vs. not), not a centre-distance
-  // score. True within-band ranking would need the raw energy value scored
-  // against the band's midpoint, which isn't wired through yet.
-  if (track._energyRaw == null) return 0.5;
-  return 1;
+// 0..1 — how close a candidate sits to the show's exemplar-derived sound,
+// once it's already inside the genre-gated moodPool (see gateByExemplarProfile
+// below — genre eligibility is a precondition, this only ranks WITHIN it).
+// CLAP similarity to the nearest individual exemplar when both the track and
+// the profile have vectors to compare; a track with no CLAP coverage (~20%
+// of the library is fully analysed today) gets a neutral 0.5 rather than
+// being penalised — partial coverage must never zero out a track that
+// already passed the genre gate. Falls back to the old flat energy-band
+// signal when there's no exemplar profile at all (show has no/too-few
+// exemplars) — fully backward compatible.
+async function themeFit(track: any, profile: ExemplarProfile | null): Promise<number> {
+  if (!profile) return track._energyRaw == null ? 0.5 : 1;
+  const clap = track.id ? await getClapEmbedding(track.id) : null;
+  const sim = exemplarSimilarity(clap, profile);
+  return sim ?? 0.5;
 }
 
 // 0..1 composite of CLAP similarity (when present) and bpm/key compatibility
@@ -103,27 +105,28 @@ function dedupeById(tracks: any[]): any[] {
 }
 
 export async function buildMaShortlist(args: BuildShortlistArgs): Promise<ShortlistEntry[]> {
-  const { showMoods, currentTrack, recentIds, recentArtists, justPlayedArtists, config, themeCentroid, themeCentroidConfig } = args;
+  const { showMoods, currentTrack, recentIds, recentArtists, justPlayedArtists, config, exemplarProfile } = args;
 
   const moodPoolRaw = showMoods.length ? await library.songsByMoods(showMoods) : [];
   const recencyFiltered = filterPickerCandidates(dedupeById(moodPoolRaw), {
     recentIds, recentArtists, justPlayedArtists, cap: Infinity,
   });
-  // Centroid gate (theme-centroid.ts) — when the show has enough analysed
-  // exemplars, narrow the recency-filtered pool down to the subset close
-  // enough to the show's sound to count as on-brief. Absent a centroid, this
-  // is a no-op: moodPool is exactly what it was before this task.
-  const moodPool = themeCentroid && themeCentroidConfig
-    ? gateByCentroid(recencyFiltered, themeCentroid, themeCentroidConfig).eligible
+  // Genre-palette gate (theme-centroid.ts) — when the show has enough
+  // usable exemplars, narrow the recency-filtered pool down to the subset
+  // that shares a literal genre tag with at least one exemplar. Absent a
+  // profile, this is a no-op: moodPool is exactly what it was before.
+  const moodPool = exemplarProfile
+    ? gateByExemplarProfile(recencyFiltered, exemplarProfile).eligible
     : recencyFiltered;
 
   const usedIds = new Set<string>();
   const entries: ShortlistEntry[] = [];
 
   // --- Theme slots ----------------------------------------------------------
-  const themeRanked = [...moodPool]
-    .map((t) => ({ track: t, score: moodFit(t) * 0.7 + eraFit(t, config.eraWindowYears) * 0.3 }))
-    .sort((a, b) => b.score - a.score);
+  const themeScored = await Promise.all(
+    moodPool.map(async (t) => ({ track: t, score: (await themeFit(t, exemplarProfile ?? null)) * 0.7 + eraFit(t, config.eraWindowYears) * 0.3 })),
+  );
+  const themeRanked = themeScored.sort((a, b) => b.score - a.score);
   for (const { track, score } of themeRanked) {
     if (entries.filter((e) => e.slot === 'theme').length >= config.themeSlots) break;
     if (usedIds.has(track.id)) continue;
@@ -154,14 +157,16 @@ export async function buildMaShortlist(args: BuildShortlistArgs): Promise<Shortl
   // represented in entries so far — this is what keeps a flow-anchored chain
   // from drifting into a narrow sonic rut over many transitions.
   const usedArtistKeys = new Set(entries.map((e) => coreArtistKey(e.track) || artistKey(e.track)));
-  const discoveryRanked = moodPool
+  const discoveryCandidates = moodPool
     .filter((t) => !usedIds.has(t.id))
     .filter((t) => {
       const key = coreArtistKey(t) || artistKey(t);
       return key && !usedArtistKeys.has(key);
-    })
-    .map((t) => ({ track: t, score: moodFit(t) }))
-    .sort((a, b) => b.score - a.score);
+    });
+  const discoveryScored = await Promise.all(
+    discoveryCandidates.map(async (t) => ({ track: t, score: await themeFit(t, exemplarProfile ?? null) })),
+  );
+  const discoveryRanked = discoveryScored.sort((a, b) => b.score - a.score);
   for (const { track, score } of discoveryRanked) {
     if (entries.filter((e) => e.slot === 'discovery').length >= config.discoverySlots) break;
     if (usedIds.has(track.id)) continue;

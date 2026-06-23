@@ -456,14 +456,14 @@ export async function pickViaPool(queue, ctx, rankTarget: { bpm: number | null; 
   // Apply picker constraints from settings — duration cap and exclude patterns.
   // Per-show overrides apply here: a live-sets show can set excludePatterns=[]
   // to clear all station-wide filters for that hour.
-  const { maxDurationSec, excludePatterns } = settings.getPickerConfig(activeShow);
+  const { maxDurationSec, minDurationSec, excludePatterns } = settings.getPickerConfig(activeShow);
   const filtered = rawCandidates.filter(c =>
-    (!c.duration || c.duration <= maxDurationSec)
+    (!c.duration || (c.duration <= maxDurationSec && c.duration >= minDurationSec))
     && isRadioPickable(c.title ?? '', c.album, excludePatterns, c.genre)
     && (!showFilter?.genre || genreMatches(c.genre, showFilter.genre)));
   const candidates = filtered.length > 0 ? filtered : rawCandidates;
   if (filtered.length < rawCandidates.length) {
-    queue.log('picker', `dropped ${rawCandidates.length - filtered.length} track(s) over ${maxDurationSec / 60}min, matching exclude patterns, or off the show's pinned genre`);
+    queue.log('picker', `dropped ${rawCandidates.length - filtered.length} track(s) outside ${minDurationSec / 60}-${maxDurationSec / 60}min, matching exclude patterns, or off the show's pinned genre`);
   }
 
   if (candidates.length === 0) {

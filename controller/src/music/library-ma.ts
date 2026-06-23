@@ -163,6 +163,11 @@ function toLibraryTrack(t: any): any {
     album: s.album,
     year: s.year,
     genre: s.genre,
+    // Full literal tag array (toSong/genre above keeps only genres[0] for the
+    // singular-genre contract every other consumer expects) — kept here too
+    // because the exemplar genre-palette gate (music/theme-centroid.ts) needs
+    // every tag a multi-genre track carries, not just its first.
+    genres: Array.isArray(t.genres) ? t.genres : (s.genre ? [s.genre] : []),
     path: s.path,         // relative file path — required by getAnnotatedUri for file:// URIs
     moods: [],            // MA has no LLM mood tags
     energy: t.analysis?.energy != null ? energyLabel(t.analysis.energy) : null,
@@ -397,23 +402,34 @@ export async function tracksLikeThis(id: string, k: number): Promise<any[]> {
 // Audio and text similarity both use CLAP in MA mode.
 export const tracksLikeThisAudio = tracksLikeThis;
 
-// Fetches one track's raw sonic-analysis axes by id, for centroid
-// computation (see music/theme-centroid.ts). Returns null on any failure or
-// when the track has no analysis at all — callers must treat that as "this
-// exemplar doesn't count", never as an error.
-export async function getAnalysisAxes(id: string): Promise<Record<string, number | null> | null> {
+// Per-exemplar data for music/theme-centroid.ts's genre-palette + CLAP-
+// similarity profile: the literal flat genre tags (no taxonomy alias
+// expansion — that's resolveGenreRow's job, wrong tool here) plus the CLAP
+// embedding, in one call. Both null-safe independently — an exemplar with
+// genres but no CLAP coverage (or vice versa) still contributes what it has.
+export async function getExemplarProfileData(id: string): Promise<{ genres: string[]; clapEmbedding: number[] | null } | null> {
   if (!id) return null;
   try {
-    const t = await apiGet<any>(`/tracks/${id}`, { include: 'analysis' });
-    if (!t?.analysis) return null;
+    const t = await apiGet<any>(`/tracks/${id}`, { include: 'analysis,clap' });
+    if (!t) return null;
     return {
-      valence: typeof t.analysis.valence === 'number' ? t.analysis.valence : null,
-      arousal: typeof t.analysis.arousal === 'number' ? t.analysis.arousal : null,
-      danceability: typeof t.analysis.danceability === 'number' ? t.analysis.danceability : null,
-      acousticness: typeof t.analysis.acousticness === 'number' ? t.analysis.acousticness : null,
-      instrumentalness: typeof t.analysis.instrumentalness === 'number' ? t.analysis.instrumentalness : null,
-      brightness: typeof t.analysis.brightness === 'number' ? t.analysis.brightness : null,
+      genres: Array.isArray(t.genres) ? t.genres : [],
+      clapEmbedding: Array.isArray(t.analysis?.clap_embedding) ? t.analysis.clap_embedding : null,
     };
+  } catch {
+    return null;
+  }
+}
+
+// CLAP embedding for one track, fetched on demand — used to rank a small,
+// already genre-gated survivor set (NOT the full ~200-per-mood raw pool;
+// fetching a 1024-dim vector for every candidate before gating would be a
+// real bandwidth cost for data the gate is about to discard anyway).
+export async function getClapEmbedding(id: string): Promise<number[] | null> {
+  if (!id) return null;
+  try {
+    const t = await apiGet<any>(`/tracks/${id}`, { include: 'analysis,clap' });
+    return Array.isArray(t?.analysis?.clap_embedding) ? t.analysis.clap_embedding : null;
   } catch {
     return null;
   }

@@ -17,6 +17,7 @@ import { queue } from '../broadcast/queue.js';
 import { tagger, startAnalyzer, startReconcile } from '../broadcast/tagger.js';
 import { config } from '../config.js';
 import * as libraryMod from './library-mod.js';
+import { buildExemplarProfile } from '../music/theme-centroid.js';
 
 export const router = express.Router();
 
@@ -94,6 +95,33 @@ router.get('/library/genres', requireAdmin, async (req, res) => {
       .map(([value, songCount]) => ({ value, songCount }))
       .sort((a, b) => b.songCount - a.songCount);
     res.json({ genres: list });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /library/exemplar-profile?ids=1,2,3 — live preview for the Shows admin
+// editor: what genre palette would the exemplar-driven picker (music/theme-
+// centroid.ts) actually derive from this set of track ids right now? Reuses
+// the exact same buildExemplarProfile the picker calls, so the preview can
+// never drift from what the picker would really do. MA mode only — the
+// genre-palette + CLAP mechanism this previews is MA-specific.
+// ---------------------------------------------------------------------------
+router.get('/library/exemplar-profile', requireAdmin, async (req, res) => {
+  if (config.libraryBackend !== 'ma-api') {
+    return res.json({ genres: [], exemplarCount: 0, clapCoverage: 0 });
+  }
+  const ids = String(req.query.ids ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+  if (!ids.length) return res.json({ genres: [], exemplarCount: 0, clapCoverage: 0 });
+  try {
+    const profile = await buildExemplarProfile(ids, { minExemplars: 1 });
+    if (!profile) return res.json({ genres: [], exemplarCount: 0, clapCoverage: 0 });
+    res.json({
+      genres: [...profile.paletteKeys].sort(),
+      exemplarCount: profile.exemplarCount,
+      clapCoverage: profile.clapVectors.length,
+    });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

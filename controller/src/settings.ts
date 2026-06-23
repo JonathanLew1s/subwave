@@ -2152,6 +2152,7 @@ export function resolveActiveShow(date = new Date(), s = get()) {
 // resolvePickerConfig() for the resolution logic.
 export function getPickerConfig(show?: { excludePatterns?: string[] | null } | null): {
   maxDurationSec: number;
+  minDurationSec: number;
   excludePatterns: string[];
 } {
   return mod.resolvePickerConfig(get(), show);

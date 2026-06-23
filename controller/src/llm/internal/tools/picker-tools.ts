@@ -106,6 +106,7 @@ export function buildPickerTools({
   recentArtists = new Set<string>(),
   justPlayedArtists = new Set<string>(),
   maxDurationSec = 600,
+  minDurationSec = 0,
   excludePatterns = [] as string[],
   genreFilter = null as string | null,
   briefPool = [] as any[],
@@ -117,6 +118,10 @@ export function buildPickerTools({
   recentArtists?: Set<string>;
   justPlayedArtists?: Set<string>; // core artist key(s) of the current/previous track — never relaxed
   maxDurationSec?: number;
+  // Floor on track length — catches non-music bonus tracks (spoken liner-note
+  // commentary, interview snippets) that a duration ceiling alone can't,
+  // since they're short rather than long. 0 = no floor.
+  minDurationSec?: number;
   excludePatterns?: string[];
   // Hard genre constraint — when set, only candidates whose genre matches
   // (via genreMatches) survive `acceptInto`'s filter. null/empty = no
@@ -154,7 +159,7 @@ export function buildPickerTools({
   const acceptInto = (list: any, n: number, { relaxArtists = true }: { relaxArtists?: boolean } = {}) => {
     if (n <= 0) return [];
     const withinLength = (list || []).filter((s: any) =>
-      (!s.duration || s.duration <= maxDurationSec)
+      (!s.duration || (s.duration <= maxDurationSec && s.duration >= minDurationSec))
       && isRadioPickable(s.title ?? '', s.album, excludePatterns, s.genre)
       && (!genreFilter || genreMatches(s.genre, genreFilter)));
     const accepted = filterPickerCandidates(shuffle(withinLength as any[]), {

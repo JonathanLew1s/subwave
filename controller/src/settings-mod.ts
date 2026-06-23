@@ -27,17 +27,29 @@
 //   match "alive", but "(live)" will match literally).
 export const PICKER_DEFAULTS = {
   maxDurationSec: 600,
+  // minDurationSec: floor on track length — catches non-music bonus tracks
+  // (spoken liner-note commentary, interview snippets) that score a
+  // plausible energy/valence value despite being pure speech. Confirmed live:
+  // a 19s "Commentary: Greg Tate" clip from a deluxe reissue slipped into an
+  // overnight show's rotation this way, with no floor to catch it.
+  minDurationSec: 60,
   excludePatterns: [
     'live at', 'live from', 'live in', '(live)',
     'acoustic version', 'demo version', 'rehearsal', 'bootleg', 'unplugged',
     'soundtrack', 'original score', 'original motion picture', 'motion picture', 'ost',
     'from the film', 'from the movie', 'from the series', 'from the show',
+    'commentary', 'interview', 'audio commentary', 'liner notes', 'spoken word',
+    'dialogue', 'narration', 'q&a', 'q & a',
   ],
-  // MA-mode composite shortlist (see music/ma-candidate-pool.ts). shadowEnabled
-  // computes the shortlist on every MA-mode track event and logs a comparison
-  // against the live pick — it never affects what actually plays. There is
-  // deliberately no "live" toggle yet: that's a later decision once shadow
-  // data has been reviewed.
+  // MA-mode composite shortlist (see music/ma-candidate-pool.ts). For a show
+  // with a usable exemplar profile (>= themeCentroid.minExemplars exemplars
+  // with real genre/CLAP data), this shortlist now drives the live pick AND
+  // auto.m3u directly — see broadcast/dj-agent-mod.ts's buildBriefPoolForShow
+  // and broadcast/scheduler.ts's refreshAutoPlaylistInner. shadowEnabled /
+  // autoPlaylistShadowEnabled below are a separate, lower-cost comparison
+  // tool for shows that DON'T have exemplars yet — they log what the
+  // shortlist would have produced without it driving anything, so an
+  // operator can see what adding exemplars would change before doing it.
   maShortlist: {
     shadowEnabled: false,
     // autoPlaylistShadowEnabled gates a SEPARATE shadow comparison for the
@@ -50,13 +62,11 @@ export const PICKER_DEFAULTS = {
     discoverySlots: 2,
     oldieSlots: 1,
     eraWindowYears: 25,
-    // Centroid-distance gate config (music/theme-centroid.ts). Only takes
-    // effect for shows with >= minExemplars analysed exemplar tracks —
+    // Exemplar-profile gate config (music/theme-centroid.ts). Only takes
+    // effect for shows with >= minExemplars usable exemplar tracks —
     // otherwise theme fit stays the existing flat energy-band behaviour.
     themeCentroid: {
       minExemplars: 2,
-      minPoolSize: 60,
-      maxThreshold: 0.30,
     },
   },
 };
@@ -93,6 +103,13 @@ export function loadPicker(stored: any) {
         return PICKER_DEFAULTS.maxDurationSec;
       }
       return Math.max(60, Math.min(3600, Math.floor(v)));
+    })(),
+    minDurationSec: (() => {
+      const v = stored.picker?.minDurationSec;
+      if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) {
+        return PICKER_DEFAULTS.minDurationSec;
+      }
+      return Math.max(0, Math.min(300, Math.floor(v)));
     })(),
     excludePatterns: Array.isArray(stored.picker?.excludePatterns)
       ? stored.picker.excludePatterns
@@ -139,16 +156,6 @@ export function loadPicker(stored: any) {
           return typeof v === 'number' && Number.isFinite(v) && v >= 1 && v <= 8
             ? Math.floor(v) : PICKER_DEFAULTS.maShortlist.themeCentroid.minExemplars;
         })(),
-        minPoolSize: (() => {
-          const v = stored.picker?.maShortlist?.themeCentroid?.minPoolSize;
-          return typeof v === 'number' && Number.isFinite(v) && v >= 10 && v <= 400
-            ? Math.floor(v) : PICKER_DEFAULTS.maShortlist.themeCentroid.minPoolSize;
-        })(),
-        maxThreshold: (() => {
-          const v = stored.picker?.maShortlist?.themeCentroid?.maxThreshold;
-          return typeof v === 'number' && Number.isFinite(v) && v > 0 && v <= 1
-            ? v : PICKER_DEFAULTS.maShortlist.themeCentroid.maxThreshold;
-        })(),
       },
     },
   };
@@ -189,6 +196,13 @@ export function applyPickerPatch(next: any, patch: any) {
       throw new Error('picker.maxDurationSec must be an integer between 60 and 3600');
     }
     next.picker.maxDurationSec = v;
+  }
+  if (p.minDurationSec !== undefined) {
+    const v = parseInt(p.minDurationSec, 10);
+    if (!Number.isFinite(v) || v < 0 || v > 300) {
+      throw new Error('picker.minDurationSec must be an integer between 0 and 300');
+    }
+    next.picker.minDurationSec = v;
   }
   if (p.excludePatterns !== undefined) {
     if (!Array.isArray(p.excludePatterns)) {
@@ -245,7 +259,7 @@ export function applyLibraryPatch(next: any, patch: any) {
 export function resolvePickerConfig(
   s: any,
   show?: { excludePatterns?: string[] | null } | null,
-): { maxDurationSec: number; excludePatterns: string[] } {
+): { maxDurationSec: number; minDurationSec: number; excludePatterns: string[] } {
   const stationWide = s.picker ?? PICKER_DEFAULTS;
   const patterns =
     show?.excludePatterns !== null && show?.excludePatterns !== undefined
@@ -253,6 +267,7 @@ export function resolvePickerConfig(
       : stationWide.excludePatterns ?? [...PICKER_DEFAULTS.excludePatterns];
   return {
     maxDurationSec: stationWide.maxDurationSec ?? PICKER_DEFAULTS.maxDurationSec,
+    minDurationSec: stationWide.minDurationSec ?? PICKER_DEFAULTS.minDurationSec,
     excludePatterns: patterns,
   };
 }

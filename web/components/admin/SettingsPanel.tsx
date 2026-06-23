@@ -186,6 +186,7 @@ interface ScrobbleForm {
 
 interface PickerForm {
   maxDurationSec: string;
+  minDurationSec: string;
   excludePatterns: string[];
 }
 
@@ -208,6 +209,8 @@ const DEFAULT_EXCLUDE_PATTERNS: string[] = [
   'acoustic version', 'demo version', 'rehearsal', 'bootleg', 'unplugged',
   'soundtrack', 'original score', 'original motion picture', 'motion picture', 'ost',
   'from the film', 'from the movie', 'from the series', 'from the show',
+  'commentary', 'interview', 'audio commentary', 'liner notes', 'spoken word',
+  'dialogue', 'narration', 'q&a', 'q & a',
 ];
 
 interface LibraryForm {
@@ -285,7 +288,7 @@ interface SettingsData {
       maxActiveLearningRounds?: number;
       enrichment?: Partial<EmbeddingEnrichmentForm>;
     };
-    picker?: { maxDurationSec?: number; excludePatterns?: string[] };
+    picker?: { maxDurationSec?: number; minDurationSec?: number; excludePatterns?: string[] };
     sfx?: { enabled?: boolean };
     scrobble?: {
       lastfm?: Partial<ScrobbleLastfmForm>;
@@ -437,6 +440,7 @@ export default function SettingsPanel() {
       },
       picker: {
         maxDurationSec: String(v.picker?.maxDurationSec ?? 600),
+        minDurationSec: String(v.picker?.minDurationSec ?? 60),
         excludePatterns: Array.isArray(v.picker?.excludePatterns)
           ? [...v.picker.excludePatterns]
           : [...DEFAULT_EXCLUDE_PATTERNS],
@@ -2246,20 +2250,24 @@ function PickerSection({ data, form, setForm, busy, saveSettings }: SectionProps
 
   const savedPicker = data.values?.picker;
   const savedMaxDuration = savedPicker?.maxDurationSec ?? 600;
+  const savedMinDuration = savedPicker?.minDurationSec ?? 60;
   const savedPatterns = savedPicker?.excludePatterns ?? DEFAULT_EXCLUDE_PATTERNS;
 
   const durationSec = parseInt(form.picker.maxDurationSec, 10) || 600;
   const durationMin = durationSec % 60 === 0
     ? `${durationSec / 60} min`
     : `${(durationSec / 60).toFixed(1)} min`;
+  const minDurationSec = parseInt(form.picker.minDurationSec, 10) || 0;
 
   const pickerDirty =
     durationSec !== savedMaxDuration ||
+    minDurationSec !== savedMinDuration ||
     JSON.stringify(form.picker.excludePatterns) !== JSON.stringify(savedPatterns);
 
   const save = () => saveSettings({
     picker: {
       maxDurationSec: durationSec,
+      minDurationSec,
       excludePatterns: form.picker.excludePatterns,
     },
   });
@@ -2291,6 +2299,7 @@ function PickerSection({ data, form, setForm, busy, saveSettings }: SectionProps
           <strong>Admin → Shows</strong>.
         </>}
         metrics={[
+          { n: String(minDurationSec), l: 'min sec' },
           { n: String(durationSec), l: 'max sec', accent: true },
           { n: String(form.picker.excludePatterns.length), l: 'patterns' },
         ]}
@@ -2320,6 +2329,29 @@ function PickerSection({ data, form, setForm, busy, saveSettings }: SectionProps
             If the entire pool would be dropped, the cap is ignored and a warning
             is logged. Set higher for long-form ambient shows; lower to keep tracks
             punchy. Range: 60–3600 s.
+          </div>
+        </div>
+        <div className="field">
+          <Label>Minimum track duration</Label>
+          <div className="flex items-center gap-2">
+            <Input
+              type="number"
+              min={0}
+              max={300}
+              step={10}
+              className="mono-num w-28"
+              value={form.picker.minDurationSec}
+              onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                setForm(f => ({ ...f, picker: { ...f.picker, minDurationSec: e.target.value } }))
+              }
+            />
+            <span className="text-[12px] text-muted">sec</span>
+          </div>
+          <div className="field-hint">
+            Candidates shorter than this are dropped — catches non-music bonus
+            tracks (spoken liner-note commentary, interview snippets) that can
+            score a plausible mood/energy value despite being pure speech. Saved
+            value: {savedMinDuration} s. Range: 0–300 s; 0 disables the floor.
           </div>
         </div>
       </Card>
