@@ -210,7 +210,15 @@ export function pickSystem() {
   // resolveActiveShow() carries genre/fromYear/toYear/energy as of the
   // upstream-sync merge, so this renders real text once a show sets them.
   const musicLean = dj.showMusicLean(activeShow);
-  const briefPoolLine = activeShow?.moods?.length
+  // exemplarTrackIds presence is a synchronous proxy for "this show's brief
+  // pool will use the exemplar-driven shortlist" — the actual profile build
+  // is async (resolved later inside buildTools) and could still come back
+  // null on a bad day (e.g. every exemplar id stopped resolving), in which
+  // case the wording below is slightly off but harmless: the source labels
+  // just won't all show up.
+  const briefPoolLine = activeShow?.exemplarTrackIds?.length
+    ? `\n\nSome candidates carry a "source" field of theme, flow, discovery, or oldie — these were reserved from the show's exemplar-matched shortlist specifically to give you on-brief variety beyond whatever your discovery tool returned. "flow" candidates are picked to transition smoothly from what's playing now; "theme"/"discovery" match the show's sound; "oldie" is a deliberate deep cut. Prefer one of these when it fits, especially if your recent picks have felt similar to each other.`
+    : activeShow?.moods?.length
     ? `\n\nSome candidates carry a "source" field of genre, energy, vibe, or eclectic — these were reserved from the show's brief pool specifically to give you on-brief variety beyond whatever your discovery tool returned. Prefer one of these when it fits, especially if your recent picks have felt similar to each other.`
     : '';
   return `${settings.agentPersonaPreamble(persona, { rules: false })}
@@ -284,11 +292,11 @@ export const pickerAgent = defineAgent({
   maxSteps: 4,
   timeoutMs: agentDeadline,
   buildSystem: () => pickSystem(),
-  buildTools: async ({ recentIds, recentKeys, recentArtists, justPlayedArtists, audioWaypoint }) => {
+  buildTools: async ({ recentIds, recentKeys, recentArtists, justPlayedArtists, audioWaypoint, currentTrack }) => {
     const activeShow = settings.resolveActiveShow();
-    const { maxDurationSec, excludePatterns } = settings.getPickerConfig(activeShow);
-    const briefPool = await buildBriefPoolForShow(activeShow, recentIds);
-    const { tools, seen } = buildPickerTools({ recentIds, recentKeys, recentArtists, justPlayedArtists, maxDurationSec, excludePatterns, genreFilter: activeShow?.genre || null, briefPool, audioWaypoint });
+    const { maxDurationSec, minDurationSec, excludePatterns } = settings.getPickerConfig(activeShow);
+    const briefPool = await buildBriefPoolForShow(activeShow, recentIds, recentArtists, justPlayedArtists, currentTrack);
+    const { tools, seen } = buildPickerTools({ recentIds, recentKeys, recentArtists, justPlayedArtists, maxDurationSec, minDurationSec, excludePatterns, genreFilter: activeShow?.genre || null, briefPool, audioWaypoint });
     return { tools: filterToolsForShow(tools, activeShow), extras: { seen } };
   },
 });
@@ -305,10 +313,11 @@ export const requestAgent = defineAgent({
   // in via settings.llm.requestWebResolve.
   buildTools: ({ recentIds }) => {
     const activeShow = settings.resolveActiveShow();
-    const { maxDurationSec, excludePatterns } = settings.getPickerConfig(activeShow);
+    const { maxDurationSec, minDurationSec, excludePatterns } = settings.getPickerConfig(activeShow);
     const { tools, seen } = buildPickerTools({
       recentIds,
       maxDurationSec,
+      minDurationSec,
       excludePatterns,
       resolveReferences: settings.get().llm?.requestWebResolve ?? false,
     });
@@ -349,7 +358,7 @@ async function enqueuePick(queue, song, reason, source, link: string | null = nu
 // Track event — a track started; pick the next one and maybe air a link.
 // ---------------------------------------------------------------------------
 
-async function pickViaAgent(queue, { wantLink, audioWaypoint = null }: { wantLink: boolean; audioWaypoint?: number[] | null }) {
+async function pickViaAgent(queue, { wantLink, audioWaypoint = null, currentTrack = null }: { wantLink: boolean; audioWaypoint?: number[] | null; currentTrack?: any }) {
   await library.load();
   const windows = recencyWindowsForLibrary(library.stats().distinctArtists);
   // Scale the recency windows to the tagged library's artist diversity: dense
@@ -369,6 +378,10 @@ async function pickViaAgent(queue, { wantLink, audioWaypoint = null }: { wantLin
     // over the run's current waypoint, so the agent path drifts the sound the
     // same way the pool path does. The event text tells the agent to use it.
     audioWaypoint,
+    // Threaded through to buildBriefPoolForShow's MA-mode shortlist (the flow
+    // slot needs to know what's currently playing to score bpm/key/CLAP
+    // compatibility against it).
+    currentTrack,
   });
 
   const song = object?.id ? extras.seen.get(object.id) : null;
@@ -494,7 +507,7 @@ export async function runTrackEvent(queue, ctx, { wantLink }) {
 
     if (settings.get().llm?.pickerAgent && !breakerOpen()) {
       try {
-        await pickViaAgent(queue, { wantLink, audioWaypoint });
+        await pickViaAgent(queue, { wantLink, audioWaypoint, currentTrack: current });
         breakerSuccess();
         maybeRunPickerShadow(queue, current).catch(() => {});
         return;

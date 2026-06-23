@@ -7,7 +7,7 @@ import * as pool from '../music/pool.js';
 import * as library from '../music/library.js';
 import { config } from '../config.js';
 import { buildMaShortlist } from '../music/ma-candidate-pool.js';
-import { computeThemeCentroid } from '../music/theme-centroid.js';
+import { buildExemplarProfile } from '../music/theme-centroid.js';
 import { recencyWindowsForLibrary } from '../music/recency.js';
 import * as pickerShadowLog from './picker-shadow-log.js';
 
@@ -24,12 +24,58 @@ import * as pickerShadowLog from './picker-shadow-log.js';
 // show is active (general rotation can use the full toolset).
 export const MOOD_AWARE_TOOLS = ['searchLibrary', 'tracksByMood', 'tracksByEnergy', 'tracksLikeThis', 'searchByLyrics'];
 
+// Resolves the show's exemplar profile, when it has one. null = the show has
+// no/too-few usable exemplars — every caller treats that as "fall back to
+// today's flat mood-band behaviour", never as an error. Shared by
+// buildBriefPoolForShow (drives the live pick) and maybeRunPickerShadow
+// (logs a comparison) so they can never compute two different profiles for
+// the same show.
+async function resolveExemplarProfile(activeShow: any) {
+  if (config.libraryBackend !== 'ma-api' || !activeShow?.exemplarTrackIds?.length) return null;
+  const picker = settings.get().picker;
+  return buildExemplarProfile(activeShow.exemplarTrackIds, picker.maShortlist.themeCentroid);
+}
+
 // Build the show's reserved brief-pool tracks for this pick — extra on-brief
-// candidates beyond whatever the agent's own discovery tool call returns
-// (music/pool.ts buildBriefPool). Empty when the active show has no moods
-// configured (general rotation, no brief to reserve a pool against).
-export async function buildBriefPoolForShow(activeShow: any, recentIds: any): Promise<any[]> {
+// candidates beyond whatever the agent's own discovery tool call returns.
+// Empty when the active show has no moods configured (general rotation, no
+// brief to reserve a pool against).
+//
+// MA mode with a usable exemplar profile: uses the genre-palette + CLAP-
+// similarity shortlist (music/ma-candidate-pool.ts) — validated live (see
+// docs/superpowers/specs/2026-06-23-show-redesign-and-genre-aware-picker-design.md)
+// to actually exclude cross-genre noise the old flat energy-band pool let
+// through. Every other case (Navidrome mode, or MA mode with no/too-few
+// exemplars) falls back to the original music/pool.ts buildBriefPool —
+// unchanged, fully backward compatible.
+export async function buildBriefPoolForShow(
+  activeShow: any,
+  recentIds: any,
+  recentArtists: any = new Set(),
+  justPlayedArtists: any = new Set(),
+  currentTrack: any = null,
+): Promise<any[]> {
   if (!activeShow?.moods?.length) return [];
+
+  const profile = await resolveExemplarProfile(activeShow);
+  if (profile) {
+    const picker = settings.get().picker;
+    const shortlist = await buildMaShortlist({
+      showMoods: activeShow.moods,
+      currentTrack,
+      recentIds,
+      recentArtists,
+      justPlayedArtists,
+      config: picker.maShortlist,
+      exemplarProfile: profile,
+    });
+    // slot (theme/flow/discovery/oldie) becomes _source — picker-tools.ts's
+    // acceptInto and the system prompt's "source field" line both just read
+    // whatever string is here; see dj-agent.ts's briefPoolLine for the
+    // exemplar-aware wording.
+    return shortlist.map((e) => ({ ...e.track, _source: e.slot }));
+  }
+
   const built = await pool.buildBriefPool({
     moods: activeShow.moods,
     vibeText: activeShow.vibe,
@@ -53,7 +99,10 @@ export function filterToolsForShow(tools: Record<string, any>, activeShow: any):
 // have offered for this track event, and logs it next to whatever the live
 // picker actually chose. Read-only, fire-and-forget, and fully isolated:
 // any failure here is swallowed and logged, never surfaced to the caller,
-// because this must never be able to affect playback.
+// because this must never be able to affect playback. Now that
+// buildBriefPoolForShow above can ALSO use this shortlist live (for shows
+// with exemplars), this comparison is most informative for shows that don't
+// have exemplars yet — it shows what adding them would actually change.
 export async function maybeRunPickerShadow(queue: any, eventCurrent: any): Promise<void> {
   const picker = settings.get().picker;
   if (!picker?.maShortlist?.shadowEnabled || config.libraryBackend !== 'ma-api') return;
@@ -65,11 +114,7 @@ export async function maybeRunPickerShadow(queue: any, eventCurrent: any): Promi
     const recentArtists = queue.recentArtistsSince(windows.artistHours);
     const justPlayedArtists = queue.justPlayedArtistKeys();
 
-    // null when the show has no exemplars (or too few analysed ones) —
-    // buildMaShortlist treats that as "no gating", same as before this task.
-    const themeCentroid = activeShow?.exemplarTrackIds?.length
-      ? await computeThemeCentroid(activeShow.exemplarTrackIds, picker.maShortlist.themeCentroid)
-      : null;
+    const exemplarProfile = await resolveExemplarProfile(activeShow);
 
     const shortlist = await buildMaShortlist({
       showMoods: activeShow?.moods ?? [],
@@ -78,8 +123,7 @@ export async function maybeRunPickerShadow(queue: any, eventCurrent: any): Promi
       recentArtists,
       justPlayedArtists,
       config: picker.maShortlist,
-      themeCentroid,
-      themeCentroidConfig: picker.maShortlist.themeCentroid,
+      exemplarProfile,
     });
 
     pickerShadowLog.record({
@@ -87,7 +131,7 @@ export async function maybeRunPickerShadow(queue: any, eventCurrent: any): Promi
       t: new Date().toISOString(),
       show: activeShow?.id ?? null,
       currentTrackId: eventCurrent?.id ?? null,
-      themeCentroidExemplars: themeCentroid?.exemplarCount ?? null,
+      exemplarCount: exemplarProfile?.exemplarCount ?? null,
       livePick: livePick ? { id: livePick.id, title: livePick.title, artist: livePick.artist } : null,
       livePickInShortlist: !!livePick?.id && shortlist.some((e: any) => e.track.id === livePick.id),
       shortlist: shortlist.map((e: any) => ({

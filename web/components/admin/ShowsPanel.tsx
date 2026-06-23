@@ -29,6 +29,9 @@ import { cn } from '../../lib/cn';
 
 const NAME_MAX = 60;
 const TOPIC_MAX = 1000;
+// Must match settings.ts's validateShowsStrict exactly (0-300 chars, 0-8 ids).
+const VIBE_MAX = 300;
+const EXEMPLARS_MAX = 8;
 const SHOWS_MAX = 64;
 
 // Radix Select rejects an empty-string item value, so the "no override"
@@ -53,6 +56,15 @@ interface Show {
   id: string;
   name: string;
   topic: string;
+  /** Optional sonic-description text — currently only reaches the embedding-
+   *  based vibe slice in music/pool.ts, which is inert while embeddings are
+   *  disabled. Kept editable here regardless so it's not a hidden field. */
+  vibe: string;
+  /** Real library track ids (3-8 recommended) that anchor this show's sound
+   *  — the genre palette + CLAP-similarity ranking the picker actually uses
+   *  for MA-backed shows are both derived from these. See
+   *  docs/superpowers/specs/2026-06-23-show-redesign-and-genre-aware-picker-design.md. */
+  exemplarTrackIds: string[];
   personaId: string;
   moods: string[];
   /** Optional theme override — empty string means "fall back to the station
@@ -109,6 +121,12 @@ interface ThemeOption {
 interface Persona {
   id: string;
   name?: string;
+}
+
+interface ExemplarTrack {
+  id: string;
+  title?: string;
+  artist?: string;
 }
 
 interface Schedule {
@@ -218,6 +236,18 @@ export default function ShowsPanel() {
   const [draft, setDraft] = useState<Show | null>(null);
   // Input for adding per-show exclude patterns in the editor modal.
   const [excludePatternInput, setExcludePatternInput] = useState('');
+  // Exemplar track picker — search query/results (GET /dj/search, the same
+  // endpoint the Library panel's search tab uses) and a label cache so
+  // already-set exemplarTrackIds show "Title — Artist" instead of bare ids.
+  const [exemplarQuery, setExemplarQuery] = useState('');
+  const [exemplarResults, setExemplarResults] = useState<ExemplarTrack[] | null>(null);
+  const [exemplarSearching, setExemplarSearching] = useState(false);
+  const [exemplarLabels, setExemplarLabels] = useState<Map<string, ExemplarTrack>>(new Map());
+  // Genre palette this show's CURRENT exemplar picks would derive — live
+  // feedback so the operator sees cause and effect in one screen instead of
+  // discovering it later. Debounced-ish: recomputed whenever exemplarTrackIds
+  // changes, via the dossier endpoint (the only one that returns genres).
+  const [derivedPalette, setDerivedPalette] = useState<{ genres: string[]; loading: boolean } | null>(null);
   // Theme list for the per-show override dropdown. Public endpoint, no auth
   // needed — same source the player ThemeBootstrap reads.
   const [themes, setThemes] = useState<ThemeOption[]>([]);
@@ -279,6 +309,8 @@ export default function ShowsPanel() {
           id: s.id ?? clientMintId(),
           name: s.name ?? '',
           topic: s.topic ?? '',
+          vibe: s.vibe ?? '',
+          exemplarTrackIds: Array.isArray(s.exemplarTrackIds) ? s.exemplarTrackIds : [],
           personaId: s.personaId ?? '',
           moods: Array.isArray(s.moods) ? s.moods : [],
           themeId: s.themeId ?? '',
@@ -329,6 +361,82 @@ export default function ShowsPanel() {
     return () => { cancelled = true; };
   }, [hydrated, needsAuth]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Resolve display labels ("Title — Artist") for a show's already-set
+  // exemplarTrackIds when its editor opens, so the picker shows real names
+  // instead of bare ids. Best-effort: a failed lookup just falls back to
+  // showing the bare id in the chip (still removable).
+  const resolveExemplarLabels = async (ids: string[]) => {
+    const missing = ids.filter(id => !exemplarLabels.has(id));
+    if (!missing.length) return;
+    const results = await Promise.all(missing.map(async (id) => {
+      try {
+        const r = await adminFetch(`/library/observatory/track/${encodeURIComponent(id)}`);
+        if (!r.ok) return null;
+        const j = await r.json().catch(() => null);
+        const t = j?.track;
+        return t ? { id, title: t.title, artist: t.artist } as ExemplarTrack : null;
+      } catch { return null; }
+    }));
+    setExemplarLabels(prev => {
+      const next = new Map(prev);
+      for (const t of results) if (t) next.set(t.id, t);
+      return next;
+    });
+  };
+
+  const runExemplarSearch = async () => {
+    const text = exemplarQuery.trim();
+    if (!text) { setExemplarResults(null); return; }
+    setExemplarSearching(true);
+    try {
+      const r = await adminFetch(`/dj/search?q=${encodeURIComponent(text)}`);
+      const j = await r.json().catch(() => ({})) as { results?: ExemplarTrack[]; error?: string };
+      if (!r.ok) throw new Error(j.error || `search failed (${r.status})`);
+      const results = j.results || [];
+      setExemplarResults(results);
+      setExemplarLabels(prev => {
+        const next = new Map(prev);
+        for (const t of results) next.set(t.id, t);
+        return next;
+      });
+    } catch (err) {
+      notify.err(errorMessage(err));
+      setExemplarResults([]);
+    } finally {
+      setExemplarSearching(false);
+    }
+  };
+
+  const addExemplar = (id: string) => {
+    if (!draft || draft.exemplarTrackIds.includes(id) || draft.exemplarTrackIds.length >= EXEMPLARS_MAX) return;
+    setDraftField({ exemplarTrackIds: [...draft.exemplarTrackIds, id] });
+  };
+  const removeExemplar = (id: string) => {
+    if (!draft) return;
+    setDraftField({ exemplarTrackIds: draft.exemplarTrackIds.filter(x => x !== id) });
+  };
+
+  // Live derived-palette preview — recomputed via the real backend logic
+  // (GET /library/exemplar-profile, which calls the exact same
+  // buildExemplarProfile the picker uses) whenever the draft's exemplar list
+  // changes, so cause and effect stay visible in the same screen.
+  useEffect(() => {
+    if (!draft || draft.exemplarTrackIds.length === 0) { setDerivedPalette(null); return; }
+    let cancelled = false;
+    setDerivedPalette(p => ({ genres: p?.genres ?? [], loading: true }));
+    (async () => {
+      try {
+        const r = await adminFetch(`/library/exemplar-profile?ids=${draft.exemplarTrackIds.map(encodeURIComponent).join(',')}`);
+        if (cancelled) return;
+        const j = await r.json().catch(() => ({})) as { genres?: string[] };
+        setDerivedPalette({ genres: j.genres || [], loading: false });
+      } catch {
+        if (!cancelled) setDerivedPalette({ genres: [], loading: false });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [draft?.exemplarTrackIds]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const personas: Persona[] = data?.values?.personas || [];
   const moodOptions: string[] = data?.tts?.moods || [];
   const colorOf = (showId: string | null | undefined): string => {
@@ -344,7 +452,7 @@ export default function ShowsPanel() {
     if (!form || form.shows.length >= SHOWS_MAX || personas.length === 0) return;
     setEditIndex(-1);
     setDraft({
-      id: '', name: '', topic: '',
+      id: '', name: '', topic: '', vibe: '', exemplarTrackIds: [],
       personaId: personas[0]?.id || '', moods: moodOptions[0] ? [moodOptions[0]] : [],
       themeId: '',
       excludePatterns: null,
@@ -357,19 +465,25 @@ export default function ShowsPanel() {
     if (!s) return;
     setEditIndex(i);
     setDraft({
-      id: s.id, name: s.name, topic: s.topic,
+      id: s.id, name: s.name, topic: s.topic, vibe: s.vibe || '',
+      exemplarTrackIds: Array.isArray(s.exemplarTrackIds) ? [...s.exemplarTrackIds] : [],
       personaId: s.personaId, moods: s.moods,
       themeId: s.themeId || '',
       excludePatterns: s.excludePatterns ?? null,
       genre: s.genre || '', fromYear: s.fromYear ?? null, toYear: s.toYear ?? null, energy: s.energy || '',
     });
+    resolveExemplarLabels(Array.isArray(s.exemplarTrackIds) ? s.exemplarTrackIds : []);
   };
-  const closeModal = () => { setEditIndex(null); setDraft(null); setExcludePatternInput(''); };
+  const closeModal = () => {
+    setEditIndex(null); setDraft(null); setExcludePatternInput('');
+    setExemplarQuery(''); setExemplarResults(null);
+  };
   const setDraftField = (patch: Partial<Show>) => setDraft(d => d ? ({ ...d, ...patch }) : d);
   const commitDraft = () => {
     if (!draft || !showValid(draft)) return;
     const clean = {
-      name: draft.name.trim(), topic: draft.topic.trim(),
+      name: draft.name.trim(), topic: draft.topic.trim(), vibe: draft.vibe.trim(),
+      exemplarTrackIds: draft.exemplarTrackIds,
       personaId: draft.personaId, moods: draft.moods,
       themeId: draft.themeId || '',
       excludePatterns: draft.excludePatterns,
@@ -922,6 +1036,105 @@ export default function ShowsPanel() {
                 placeholder="e.g. Slow ambient, modern classical and downtempo for the late shift. Think Nils Frahm, Hammock, Bonobo's quieter side — nothing with a hard beat. Keep the host calm and unhurried, like a friend talking you down at 1am."
               />
               <span className="field-hint">{draft.topic.trim().length}/{TOPIC_MAX}</span>
+            </Field>
+
+            <Field>
+              <Label>exemplar tracks — anchors this show's sound (3-8 recommended)</Label>
+              <span className="field-hint">
+                Real tracks that capture this show&apos;s sound. The MA picker
+                derives a genre palette from their literal tags and ranks
+                candidates by CLAP similarity to the nearest one of these — this
+                is the main thing that drives the picker for MA-backed shows,
+                more than topic or mood. Search and add below.
+              </span>
+              <div className="flex min-h-[36px] flex-wrap gap-1.5 border border-ink bg-[var(--field)] p-2">
+                {draft.exemplarTrackIds.length === 0 && (
+                  <span className="text-[11px] text-muted italic">
+                    No exemplars yet — picker falls back to mood-band selection only.
+                  </span>
+                )}
+                {draft.exemplarTrackIds.map(id => {
+                  const t = exemplarLabels.get(id);
+                  return (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() => removeExemplar(id)}
+                      className="inline-flex cursor-pointer items-center gap-1 border border-separator-strong bg-transparent px-2 py-0.5 font-[inherit] text-[11px] text-ink hover:border-[var(--danger)] hover:text-[var(--danger)]"
+                    >
+                      {t ? <span>{t.title} — {t.artist}</span> : <code>{id}</code>}
+                      <span className="text-[10px] opacity-60">×</span>
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="flex items-center gap-2">
+                <Input
+                  value={exemplarQuery}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) => setExemplarQuery(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); runExemplarSearch(); } }}
+                  placeholder="search title or artist"
+                  className="max-w-[260px] text-[12px]"
+                  disabled={draft.exemplarTrackIds.length >= EXEMPLARS_MAX}
+                />
+                <Btn sm onClick={runExemplarSearch} disabled={!exemplarQuery.trim() || exemplarSearching}>
+                  {exemplarSearching ? 'Searching…' : 'Search'}
+                </Btn>
+              </div>
+              {exemplarResults && (
+                <div className="grid max-h-[180px] gap-1 overflow-y-auto border border-ink bg-[var(--field)] p-2">
+                  {exemplarResults.length === 0 && (
+                    <span className="text-[11px] text-muted italic">No matches.</span>
+                  )}
+                  {exemplarResults.map(t => {
+                    const already = draft.exemplarTrackIds.includes(t.id);
+                    return (
+                      <button
+                        key={t.id}
+                        type="button"
+                        disabled={already || draft.exemplarTrackIds.length >= EXEMPLARS_MAX}
+                        onClick={() => addExemplar(t.id)}
+                        className={cn(
+                          'flex items-center justify-between px-2 py-1 text-left text-[12px] hover:bg-[var(--ink-softer)]',
+                          already && 'opacity-40',
+                        )}
+                      >
+                        <span>{t.title} — {t.artist}</span>
+                        <span className="text-[10px] text-muted">{already ? 'added' : '+ add'}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+              {derivedPalette && (
+                <div className="field-hint">
+                  Genre palette this would derive right now:{' '}
+                  {derivedPalette.loading
+                    ? '…'
+                    : derivedPalette.genres.length
+                      ? derivedPalette.genres.map(g => <code key={g} className="mr-1">{g}</code>)
+                      : <span className="italic">none — exemplars have no usable genre tags yet</span>}
+                </div>
+              )}
+            </Field>
+
+            <Field>
+              <Label htmlFor="show-vibe">vibe — optional sonic description</Label>
+              <span className="field-hint">
+                Free-text description of the sound, separate from topic&apos;s
+                presenter-facing brief. Only reaches the picker via an
+                embedding-based slice that&apos;s currently off station-wide
+                (Settings → Embeddings) — exemplars above are what actually
+                drives MA-backed shows today. Kept here so it&apos;s not a
+                hidden field.
+              </span>
+              <Textarea
+                id="show-vibe"
+                rows={3} value={draft.vibe} maxLength={VIBE_MAX}
+                onChange={(e: ChangeEvent<HTMLTextAreaElement>) => setDraftField({ vibe: e.target.value })}
+                placeholder="e.g. Warm acoustic and indie-folk textures, soft electric piano, unhurried tempos."
+              />
+              <span className="field-hint">{draft.vibe.trim().length}/{VIBE_MAX}</span>
             </Field>
 
             <Field>
