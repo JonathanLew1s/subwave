@@ -110,6 +110,46 @@ const MOOD_NEIGHBOURS_MA: Record<string, string[]> = {
 };
 const MOOD_MIN_EXACT_MA = 12;
 
+// Per-track mood membership for display (Observatory's MOOD tag/rail chips) —
+// a pure local check of one track's own analysis/genres against the exact
+// criteria songsByMood uses server-side, so the dossier never disagrees with
+// what the picker actually means by a mood. NOT used by the picker itself
+// (which queries the sidecar directly); this only answers "which of the
+// servable moods does this specific track qualify for". morning/evening are
+// never returned (see NO_TRACK_FILTER_MOODS — no per-track signal exists).
+export function deriveMoods(t: any): string[] {
+  const moods: string[] = [];
+  const energy: number | null = t.analysis?.energy ?? null;
+  const valence: number | null = t.analysis?.valence ?? null;
+
+  if (energy != null) {
+    for (const [mood, band] of Object.entries(SONIC_MOODS)) {
+      const [eMin, eMax] = band.energy;
+      if (eMin != null && energy < eMin) continue;
+      if (eMax != null && energy > eMax) continue;
+      if (band.valence) {
+        if (valence == null) continue; // can't confirm the valence half of the band
+        const [vMin, vMax] = band.valence;
+        if (vMin != null && valence < vMin) continue;
+        if (vMax != null && valence > vMax) continue;
+      }
+      moods.push(mood);
+    }
+    for (const [mood, [eMin, eMax]] of Object.entries(FESTIVAL_COOKING_ENERGY)) {
+      if (eMin != null && energy < eMin) continue;
+      if (eMax != null && energy > eMax) continue;
+      moods.push(mood);
+    }
+  }
+
+  const genreKeys = new Set((t.genres ?? []).map((g: string) => g.toLowerCase()));
+  for (const [mood, genreNames] of Object.entries(GENRE_MOODS)) {
+    if (genreNames.some((g) => genreKeys.has(g.toLowerCase()))) moods.push(mood);
+  }
+
+  return moods;
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -468,7 +508,7 @@ function shapeObservatoryTrack(t: any): any {
     year: t.year ?? null,
     genre: t.genres?.[0] ?? null,
     durationSec: t.duration ?? null,
-    moods: [],
+    moods: deriveMoods(t),
     energy: t.analysis?.energy != null ? energyLabel(t.analysis.energy) : null,
     source: 'ma-api',
     confidence: null,

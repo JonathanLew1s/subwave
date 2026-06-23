@@ -5,6 +5,7 @@
 import * as library from '../music/library.js';
 import * as settings from '../settings.js';
 import * as maDbApi from '../music/ma-db-api.js';
+import { deriveMoods } from '../music/library-ma.js';
 
 // GET /library/observatory, ma-api branch — the sidecar already returns one
 // row per CLAP-analysed track, so there's no local-DB sampling/truncation to
@@ -97,7 +98,7 @@ export async function observatoryTrackMa(id: string) {
       loudnessLufs: t.analysis?.loudness_lufs ?? null,
       energy: energyLabel,
       source: 'ma-api',
-      moods: [],
+      moods: deriveMoods(t),
       confidence: null,
       taggerVersion: null,
       model: null,
