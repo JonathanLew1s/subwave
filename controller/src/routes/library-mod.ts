@@ -58,10 +58,15 @@ function paceFromRmsEnergy(rms: number[] | null | undefined, durationMs: number)
 // sidecar's SQLite library, not the local library-db. Pulls full analysis
 // (?include=analysis is required by the sidecar — omitting it silently nulls
 // every analysis field) plus a CLAP-similarity mixNext via tracksLikeThis.
-// structure/vocalRanges/keyRanges have no MA-sidecar equivalent (no section,
-// vocal-activity, or key-modulation detection there) and stay null — but
-// rms_energy gives us a real pace curve, so SONG SHAPE isn't unconditionally
-// empty for every MA-backend track (see paceFromRmsEnergy above).
+// structure/vocalRanges/keyRanges have no MA-sidecar equivalent and stay
+// null — re-confirmed by inspecting the live API's full analysis field list:
+// the only time-coded arrays it ever returns are beats/downbeats/rms_energy
+// (all rhythmic), and key/mode/camelot/instrumentalness are single whole-
+// track scalars. There is no section, vocal-activity, or key-modulation
+// signal to extract from this backend, period — not a gap worth re-checking
+// without the sidecar itself adding new analysis. rms_energy does give us a
+// real pace curve, so SONG SHAPE isn't unconditionally empty (see
+// paceFromRmsEnergy above).
 export async function observatoryTrackMa(id: string) {
   // clap_embedding is gated behind its own include flag — `analysis` alone
   // always comes back null for it (verified live: a track with a confirmed
