@@ -143,6 +143,16 @@ export function start(ctx: any, handoff: any = null): any {
     messages: [],
   };
   appendTurn({ role: 'event', kind: 'scenario', text: scenarioText(_session) });
+  // One-time handoff turn — NOT a perpetual re-injection (see windowMessages,
+  // which used to special-case `_session.handoff` and show this on every
+  // single pick for the session's entire multi-hour life, well past the
+  // actual transition: a "you last said X" framing repeated unchanged across
+  // dozens of picks, stale and likely contributing to the DJ's own repeated
+  // phrasing). Appending it as a normal turn lets it scroll out of
+  // WINDOW_TURNS like everything else, instead of never aging.
+  if (handoff) {
+    appendTurn({ role: 'event', kind: 'handoff', text: `Continuing on air from ${handoff}` });
+  }
   persist();
   // Milestone on the unified timeline — marks where one DJ run ends and the
   // next begins, so traces can be grouped by the session they belong to.
@@ -204,8 +214,9 @@ function softShift(ctx: any, nextKey: string): any {
   return _session;
 }
 
-// The bounded chat window fed to the DJ agent — handoff + the last N turns,
-// mapped to AI SDK message roles. The full log stays on disk for the UI.
+// The bounded chat window fed to the DJ agent — the last N turns (including
+// the one-time handoff turn, when the session started with one), mapped to
+// AI SDK message roles. The full log stays on disk for the UI.
 // Consecutive same-role turns are coalesced because some providers (Anthropic)
 // require strictly alternating user/assistant messages.
 //
@@ -235,9 +246,6 @@ function softShift(ctx: any, nextKey: string): any {
 export function windowMessages() {
   if (!_session) return [];
   const raw: any[] = [];
-  if (_session.handoff) {
-    raw.push({ role: 'user', content: `[Continuing on air from ${_session.handoff}]` });
-  }
   const recent = _session.messages.slice(-WINDOW_TURNS);
   // Find the index of the most-recent pick-event user message — older ones
   // are filtered, this one is the current ask we want the agent to respond to.
