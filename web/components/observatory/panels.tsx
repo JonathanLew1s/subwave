@@ -618,29 +618,20 @@ export function Dossier({
         </Card>
       )}
 
-      <Card title="EMBEDDINGS" sub="LEARNED VECTORS">
-        {detail?.textEmbedding ? (
-          <Fingerprint
-            vector={detail.textEmbedding}
-            seed={track._eseed}
-            dim={768}
-            cols={48}
-            label="TEXT"
-            meta={`${detail.textEmbedding.length}d · ${d?.model || 'model'}`}
-          />
-        ) : (
-          <div className="fp">
-            <div className="fp-head">
-              <span className="t-caption" style={{ fontWeight: 700 }}>
-                TEXT
-              </span>
-              <span className="t-caption ad-muted">no vector</span>
-            </div>
-          </div>
-        )}
-        {detail?.audioEmbedding ? (
-          <>
-            <div style={{ height: 14 }} />
+      {(detail?.textEmbedding || detail?.audioEmbedding) && (
+        <Card title="EMBEDDINGS" sub="LEARNED VECTORS">
+          {detail?.textEmbedding && (
+            <Fingerprint
+              vector={detail.textEmbedding}
+              seed={track._eseed}
+              dim={768}
+              cols={48}
+              label="TEXT"
+              meta={`${detail.textEmbedding.length}d · ${d?.model || 'model'}`}
+            />
+          )}
+          {detail?.textEmbedding && detail?.audioEmbedding && <div style={{ height: 14 }} />}
+          {detail?.audioEmbedding && (
             <Fingerprint
               vector={detail.audioEmbedding}
               seed={track._eseed ^ 0x9e37}
@@ -649,9 +640,9 @@ export function Dossier({
               label="AUDIO"
               meta={`${detail.audioEmbedding.length}d · laion-clap`}
             />
-          </>
-        ) : null}
-      </Card>
+          )}
+        </Card>
+      )}
 
       <Card title="MIX NEXT" sub="NEAREST IN VECTOR SPACE">
         {mixNodes.length ? (
