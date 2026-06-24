@@ -27,10 +27,12 @@ export const MOOD_AWARE_TOOLS = ['searchLibrary', 'tracksByMood', 'tracksByEnerg
 // Resolves the show's exemplar profile, when it has one. null = the show has
 // no/too-few usable exemplars — every caller treats that as "fall back to
 // today's flat mood-band behaviour", never as an error. Shared by
-// buildBriefPoolForShow (drives the live pick) and maybeRunPickerShadow
-// (logs a comparison) so they can never compute two different profiles for
-// the same show.
-async function resolveExemplarProfile(activeShow: any) {
+// buildBriefPoolForShow (drives the live pick), the picker agent's
+// buildTools (gates every discovery-tool result, not just the brief-pool
+// reserve — see picker-tools.ts's exemplarProfile param), and
+// maybeRunPickerShadow (logs a comparison) so none of them can ever compute
+// a different profile for the same show.
+export async function resolveExemplarProfile(activeShow: any) {
   if (config.libraryBackend !== 'ma-api' || !activeShow?.exemplarTrackIds?.length) return null;
   const picker = settings.get().picker;
   return buildExemplarProfile(activeShow.exemplarTrackIds, picker.maShortlist.themeCentroid);

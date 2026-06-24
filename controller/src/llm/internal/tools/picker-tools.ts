@@ -12,6 +12,7 @@ import * as subsonic from '../../../music/library-backend.js';
 import * as library from '../../../music/library.js';
 import * as embeddings from '../../../music/embeddings.js';
 import { artistKey, coreArtistKey, filterPickerCandidates, genreMatches } from '../../../music/recency.js';
+import { trackMatchesPalette, type ExemplarProfile } from '../../../music/theme-centroid.js';
 import { searchWeb, searchReady } from '../../../skills/web-search.js';
 import { identifyTrackFromText } from '../prompts/request.js';
 
@@ -109,6 +110,7 @@ export function buildPickerTools({
   minDurationSec = 0,
   excludePatterns = [] as string[],
   genreFilter = null as string | null,
+  exemplarProfile = null as ExemplarProfile | null,
   briefPool = [] as any[],
   audioWaypoint = null,
   resolveReferences = false,
@@ -135,6 +137,19 @@ export function buildPickerTools({
   // wrong-genre candidates — exactly what this filter exists to prevent. Do
   // not "fix" this into symmetry with the pool path.
   genreFilter?: string | null;
+  // Exemplar-derived genre palette (music/theme-centroid.ts) — when present,
+  // applies the SAME hard genre gate buildMaShortlist already applies to the
+  // reserved brief pool, but to every candidate any discovery tool surfaces.
+  // Without this, a show with exemplars but no show.genre set (the intended
+  // shape — exemplars are meant to REPLACE the free-text genre field) had
+  // its hard genre constraint apply only to the ~4 brief-pool reserve slots;
+  // the agent's own tracksByMood/searchLibrary/etc. calls passed through
+  // unfiltered, surfacing cross-genre noise (confirmed live: Golden Hour,
+  // exemplars Marvin Gaye/Sade/Daft Punk → disco/downtempo/dance palette,
+  // agent picks still included R.E.M., Oasis, Green Day, Wings, Bill Evans).
+  // Independent of genreFilter — both apply (AND) when both are set, though
+  // in practice a show sets one or the other, never both.
+  exemplarProfile?: ExemplarProfile | null;
   briefPool?: any[];
   // The active sonic journey's current waypoint vector (broadcast/dj-agent.ts).
   // When present, the tracksTowardJourney tool below is registered, closing
@@ -161,7 +176,8 @@ export function buildPickerTools({
     const withinLength = (list || []).filter((s: any) =>
       (!s.duration || (s.duration <= maxDurationSec && s.duration >= minDurationSec))
       && isRadioPickable(s.title ?? '', s.album, excludePatterns, s.genre)
-      && (!genreFilter || genreMatches(s.genre, genreFilter)));
+      && (!genreFilter || genreMatches(s.genre, genreFilter))
+      && (!exemplarProfile || trackMatchesPalette(s, exemplarProfile)));
     const accepted = filterPickerCandidates(shuffle(withinLength as any[]), {
       recentIds,
       recentKeys,

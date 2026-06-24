@@ -25,7 +25,7 @@ import { buildPickerTools } from '../llm/tools.js';
 import { recordPick } from '../llm/log.js';
 import { withTrace, logEvent } from '../observability/events.js';
 import { recencyWindowsForLibrary } from '../music/recency.js';
-import { buildBriefPoolForShow, filterToolsForShow, maybeRunPickerShadow } from './dj-agent-mod.js';
+import { buildBriefPoolForShow, filterToolsForShow, maybeRunPickerShadow, resolveExemplarProfile } from './dj-agent-mod.js';
 
 // --- Feature 4: DJ-mode mini-runs ------------------------------------------
 // A short, deliberate tempo/key journey across 2-3 consecutive picks. While a
@@ -295,8 +295,12 @@ export const pickerAgent = defineAgent({
   buildTools: async ({ recentIds, recentKeys, recentArtists, justPlayedArtists, audioWaypoint, currentTrack }) => {
     const activeShow = settings.resolveActiveShow();
     const { maxDurationSec, minDurationSec, excludePatterns } = settings.getPickerConfig(activeShow);
+    // Same profile buildBriefPoolForShow resolves internally for the reserve
+    // slots — computed once more here so it can also gate the agent's own
+    // discovery-tool calls (see picker-tools.ts's exemplarProfile param).
+    const exemplarProfile = await resolveExemplarProfile(activeShow);
     const briefPool = await buildBriefPoolForShow(activeShow, recentIds, recentArtists, justPlayedArtists, currentTrack);
-    const { tools, seen } = buildPickerTools({ recentIds, recentKeys, recentArtists, justPlayedArtists, maxDurationSec, minDurationSec, excludePatterns, genreFilter: activeShow?.genre || null, briefPool, audioWaypoint });
+    const { tools, seen } = buildPickerTools({ recentIds, recentKeys, recentArtists, justPlayedArtists, maxDurationSec, minDurationSec, excludePatterns, genreFilter: activeShow?.genre || null, exemplarProfile, briefPool, audioWaypoint });
     return { tools: filterToolsForShow(tools, activeShow), extras: { seen } };
   },
 });

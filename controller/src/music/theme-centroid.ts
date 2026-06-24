@@ -107,17 +107,24 @@ export interface GateResult {
   eligible: any[];
 }
 
-// Hard-gates `tracks` to the exemplar-derived genre palette — a track
-// qualifies if ANY of its own literal genre tags (the full `genres` array,
-// not just the first) matches the palette, normalised for case/punctuation
-// but never expanded through the taxonomy alias rollup (see module comment).
-// Tracks with no genre tag at all are excluded, not admitted by default —
-// same "can't score it, don't count it" stance as exemplarSimilarity above.
+// Per-track predicate behind both gateByExemplarProfile (bulk pool gating)
+// and the picker-tools genreFilter wiring (per-candidate gating on every
+// agent discovery-tool result) — a track qualifies if ANY of its own
+// literal genre tags (the full `genres` array when present, else the
+// singular `genre` slim tools carry) matches the palette, normalised for
+// case/punctuation but never expanded through the taxonomy alias rollup
+// (see module comment). A track with no genre tag at all fails the check,
+// not passes by default — same "can't score it, don't count it" stance as
+// exemplarSimilarity above.
+export function trackMatchesPalette(track: any, profile: ExemplarProfile): boolean {
+  if (!profile.paletteKeys.size) return false;
+  const genres: string[] = Array.isArray(track?.genres) ? track.genres : (track?.genre ? [track.genre] : []);
+  return genres.some((g) => profile.paletteKeys.has(norm(g)));
+}
+
+// Hard-gates `tracks` to the exemplar-derived genre palette. See
+// trackMatchesPalette for the per-track rule.
 export function gateByExemplarProfile(tracks: any[], profile: ExemplarProfile): GateResult {
   if (!profile.paletteKeys.size) return { eligible: [] };
-  const eligible = tracks.filter((t) => {
-    const genres: string[] = Array.isArray(t.genres) ? t.genres : (t.genre ? [t.genre] : []);
-    return genres.some((g) => profile.paletteKeys.has(norm(g)));
-  });
-  return { eligible };
+  return { eligible: tracks.filter((t) => trackMatchesPalette(t, profile)) };
 }
