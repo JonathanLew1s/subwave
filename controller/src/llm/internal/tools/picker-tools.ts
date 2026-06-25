@@ -56,6 +56,17 @@ function slim(s: any) {
     genre: s.genre || null,
     ...(s.duration != null ? { duration: Math.round(s.duration) } : {}),
     ...(s._source ? { source: s._source } : {}),
+    // Goes out in the tool's JSON result alongside everything above (no
+    // separate model-facing projection exists — whatever slim() returns IS
+    // what the model sees AND what dj-agent.ts resolves the chosen id back
+    // to via `seen`), but it's the load-bearing field: without `.path`,
+    // music/ma-db-api.ts's getPlayableUri has no id-based fallback (unlike
+    // subsonic.ts) and returns '' — every agent-sourced pick got queued and
+    // logged as a pick, then silently never reached Liquidsoap (confirmed
+    // live: a "Dead Heart" agent pick logged at 04:20:53 never produced a
+    // track.play event; the next 3 tracks all played from the auto.m3u
+    // fallback instead). Navidrome mode masked this entirely via getStreamUrl.
+    path: s.path ?? null,
   };
   // Surface measured acoustic facts when known — from the song itself (library
   // sources, via slimTrack) or a library lookup (Subsonic sources). Each field

@@ -388,15 +388,29 @@ async function pickViaAgent(queue, { wantLink, audioWaypoint = null, currentTrac
     currentTrack,
   });
 
-  const song = object?.id ? extras.seen.get(object.id) : null;
+  let song = object?.id ? extras.seen.get(object.id) : null;
+  let pickSource = 'agent';
   if (!song) {
     // The agent returned an id that isn't in the candidate set it was shown —
-    // it fabricated one. The trace still ends ok:true (we fall back to the pool
-    // and air a track), so without this explicit event the rejection is
+    // it fabricated one (confirmed live, see seen.size below: this fires even
+    // when seen holds real, already exemplar/genre-gated candidates, so it's
+    // a model error, not an empty pool). The trace still ends ok:true (we
+    // recover below), so without this explicit event the rejection is
     // invisible to /debug and the log analyzer, which then over-report agent
     // health. Emit it inside the live trace so agent-pick reliability is real.
     logEvent('pick.rejected', { agent: 'pick', id: object?.id ?? null, candidates: extras.seen.size, steps, toolCalls });
-    throw new Error(`agent returned unknown id ${object?.id}`);
+    // Recover from `seen` rather than throwing straight to the stateless pool
+    // fallback: every candidate in `seen` already passed this run's mood/
+    // genre/exemplar gating (picker-tools.ts), so picking ANY of them keeps
+    // show adherence intact. Throwing here discarded that whole gated pool on
+    // a model slip and, worse, counted as an agent failure — three in a row
+    // disables the agent for 10 min, falling back to music/picker.js, which
+    // has no exemplar awareness at all. Only throw (preserving the existing
+    // failure-streak/breaker behaviour) when there's truly nothing to recover.
+    const candidates = [...extras.seen.values()];
+    if (!candidates.length) throw new Error(`agent returned unknown id ${object?.id}`);
+    song = candidates[Math.floor(Math.random() * candidates.length)];
+    pickSource = 'agent-fallback';
   }
 
   const rawSay = typeof object.say === 'string' ? object.say.trim() : '';
@@ -407,7 +421,7 @@ async function pickViaAgent(queue, { wantLink, audioWaypoint = null, currentTrac
   const say = (djMode && rawSay) ? dj.enforceIntroBudget(rawSay, introMsOf(song)) : rawSay;
   // Attach the link to the pick so it airs as the pick starts (back-announcing
   // the track on-air now), instead of immediately over that on-air track (#189).
-  await enqueuePick(queue, song, object.reason, 'agent', (wantLink && say) ? say : null);
+  await enqueuePick(queue, song, object.reason, pickSource, (wantLink && say) ? say : null);
   session.appendTurn({
     role: 'dj', kind: 'pick',
     text: object.reason || `Selected "${song.title}".`,
