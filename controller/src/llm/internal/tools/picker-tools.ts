@@ -182,13 +182,13 @@ export function buildPickerTools({
   // agent — see picker-latency notes in dj-agent.js. The seen map still
   // accumulates across the whole loop, so the agent's id space grows with
   // each tool call regardless.
-  const acceptInto = (list: any, n: number, { relaxArtists = true }: { relaxArtists?: boolean } = {}) => {
+  const acceptInto = (list: any, n: number, { relaxArtists = true, applyExemplarGate = true }: { relaxArtists?: boolean; applyExemplarGate?: boolean } = {}) => {
     if (n <= 0) return [];
     const withinLength = (list || []).filter((s: any) =>
       (!s.duration || (s.duration <= maxDurationSec && s.duration >= minDurationSec))
       && isRadioPickable(s.title ?? '', s.album, excludePatterns, s.genre)
       && (!genreFilter || genreMatches(s.genre, genreFilter))
-      && (!exemplarProfile || trackMatchesPalette(s, exemplarProfile)));
+      && (!applyExemplarGate || !exemplarProfile || trackMatchesPalette(s, exemplarProfile)));
     const accepted = filterPickerCandidates(shuffle(withinLength as any[]), {
       recentIds,
       recentKeys,
@@ -209,7 +209,21 @@ export function buildPickerTools({
     return out;
   };
 
-  const collect = (list: any, cap = 10) => {
+  // applyExemplarGate: false for similarity-driven discovery (tracksLikeThis,
+  // tracksThatSoundLikeThis) — theme-centroid.ts's own design rationale is
+  // that literal-tag genre identity and similarity/CLAP texture are
+  // deliberately DIFFERENT axes (a quiet jazz standard and a quiet indie-folk
+  // song can sit next to each other in similarity space without sharing a
+  // genre tag), and gating buildMaShortlist's flow slot WORKS specifically
+  // because it ranks similarity WITHIN an already mood/genre-scoped pool —
+  // these two tools query similarity against the whole library with no such
+  // pre-scoping, so the hard gate has nothing pre-filtered to fall back on
+  // and zeroes out almost every call. Confirmed live: agent rejection rate
+  // (model hallucinating an id when its one discovery call comes back empty)
+  // jumped from ~16% to ~84% the moment the gate started covering these two
+  // tools. The brief-pool reserve (still fully gated) is every other tool's
+  // and these two tools' shared safety net for staying on-brief.
+  const collect = (list: any, cap = 10, { applyExemplarGate = true }: { applyExemplarGate?: boolean } = {}) => {
     const out: any[] = [];
     if (briefPool.length) {
       out.push(...acceptInto(shuffle(briefPool), Math.min(BRIEF_RESERVE, cap)));
@@ -218,7 +232,7 @@ export function buildPickerTools({
     // don't let this tool's own results fall back to a same-recent-artist
     // candidate via the recency cascade — only relax recentArtists here when
     // this is the only source of candidates so far.
-    out.push(...acceptInto(list, cap - out.length, { relaxArtists: seen.size === 0 }));
+    out.push(...acceptInto(list, cap - out.length, { relaxArtists: seen.size === 0, applyExemplarGate }));
     return out;
   };
 
@@ -342,7 +356,7 @@ export function buildPickerTools({
         k: z.number().int().min(1).max(50).default(20),
       }),
       execute: async ({ songId, k }) => {
-        try { await library.load(); return collect(await library.tracksLikeThis(songId, k)); }
+        try { await library.load(); return collect(await library.tracksLikeThis(songId, k), 10, { applyExemplarGate: false }); }
         catch (err) { return { error: err.message }; }
       },
     }),
@@ -354,7 +368,7 @@ export function buildPickerTools({
         k: z.number().int().min(1).max(50).default(20),
       }),
       execute: async ({ songId, k }) => {
-        try { await library.load(); return collect(await library.tracksLikeThisAudio(songId, k)); }
+        try { await library.load(); return collect(await library.tracksLikeThisAudio(songId, k), 10, { applyExemplarGate: false }); }
         catch (err) { return { error: err.message }; }
       },
     }),
