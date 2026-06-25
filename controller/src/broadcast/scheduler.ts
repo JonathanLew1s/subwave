@@ -90,7 +90,17 @@ async function refreshAutoPlaylistInner() {
       config: pickerSettings.maShortlist,
       exemplarProfile,
     });
-    const randomTracks = await subsonic.getRandomSongs({ size: 20 }); // small diversity buffer
+    // Scaled to the shortlist's own size, not a fixed 20 — a fixed buffer was
+    // confirmed live to swamp a typical ~9-12 track exemplar shortlist (one
+    // refresh: theme=4 flow=4 discovery=1 oldie=0 = 9 gated vs. random=19 of
+    // 28 total, i.e. the UNGATED majority of what aired), defeating the whole
+    // point of an exemplar-driven show by routinely surfacing tracks with no
+    // relation to its genre palette (confirmed live: Ella Fitzgerald jazz
+    // standards airing during The Long Stretch, an electronic/downtempo
+    // show). 25%, floor 2 — enough for real variety without outweighing the
+    // on-brief candidates it's meant to season, not replace.
+    const randomSize = Math.max(2, Math.round(shortlist.length * 0.25));
+    const randomTracks = await subsonic.getRandomSongs({ size: randomSize });
     const shortlistPool = shortlist.map((e: any) => ({ ...e.track, _source: e.slot }));
     const randPool = randomTracks.map((t: any) => ({ ...t, _source: 'random' }));
     rawCandidates = [...shortlistPool, ...randPool];
