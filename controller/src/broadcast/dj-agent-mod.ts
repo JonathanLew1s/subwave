@@ -56,10 +56,17 @@ export async function buildBriefPoolForShow(
   recentArtists: any = new Set(),
   justPlayedArtists: any = new Set(),
   currentTrack: any = null,
+  // Optional — the picker agent's buildTools already resolves this same
+  // show's profile to gate its own discovery tools (picker-tools.ts's
+  // exemplarProfile param) and passes it through here so it's never computed
+  // twice (a real cost: buildExemplarProfile hits the MA sidecar once per
+  // exemplar id). undefined (not passed) = resolve it here, same as before —
+  // callers that only need the brief pool (none currently) are unaffected.
+  precomputedProfile: any = undefined,
 ): Promise<any[]> {
   if (!activeShow?.moods?.length) return [];
 
-  const profile = await resolveExemplarProfile(activeShow);
+  const profile = precomputedProfile !== undefined ? precomputedProfile : await resolveExemplarProfile(activeShow);
   if (profile) {
     const picker = settings.get().picker;
     const shortlist = await buildMaShortlist({

@@ -295,11 +295,12 @@ export const pickerAgent = defineAgent({
   buildTools: async ({ recentIds, recentKeys, recentArtists, justPlayedArtists, audioWaypoint, currentTrack }) => {
     const activeShow = settings.resolveActiveShow();
     const { maxDurationSec, minDurationSec, excludePatterns } = settings.getPickerConfig(activeShow);
-    // Same profile buildBriefPoolForShow resolves internally for the reserve
-    // slots — computed once more here so it can also gate the agent's own
-    // discovery-tool calls (see picker-tools.ts's exemplarProfile param).
-    const exemplarProfile = await resolveExemplarProfile(activeShow);
-    const briefPool = await buildBriefPoolForShow(activeShow, recentIds, recentArtists, justPlayedArtists, currentTrack);
+    // Gated on moods.length, matching buildBriefPoolForShow's own check below
+    // — a show with exemplars but no moods has no brief at all (general
+    // rotation), so its discovery tools shouldn't be exemplar-gated either.
+    // Passed into buildBriefPoolForShow so it's resolved once, not twice.
+    const exemplarProfile = activeShow?.moods?.length ? await resolveExemplarProfile(activeShow) : null;
+    const briefPool = await buildBriefPoolForShow(activeShow, recentIds, recentArtists, justPlayedArtists, currentTrack, exemplarProfile);
     const { tools, seen } = buildPickerTools({ recentIds, recentKeys, recentArtists, justPlayedArtists, maxDurationSec, minDurationSec, excludePatterns, genreFilter: activeShow?.genre || null, exemplarProfile, briefPool, audioWaypoint });
     return { tools: filterToolsForShow(tools, activeShow), extras: { seen } };
   },
@@ -390,6 +391,13 @@ async function pickViaAgent(queue, { wantLink, audioWaypoint = null, currentTrac
 
   let song = object?.id ? extras.seen.get(object.id) : null;
   let pickSource = 'agent';
+  // Set only on the fallback path below — object.reason/object.say describe
+  // whatever track the model THOUGHT it picked, not `song`, so they must
+  // never reach enqueuePick/the session turn once we've substituted a
+  // different track (confirmed live: the original version aired this
+  // mismatched reason text as the on-air DJ link, describing a track that
+  // wasn't the one playing).
+  let fallbackReason: string | null = null;
   if (!song) {
     // The agent returned an id that isn't in the candidate set it was shown —
     // it fabricated one (confirmed live, see seen.size below: this fires even
@@ -400,20 +408,27 @@ async function pickViaAgent(queue, { wantLink, audioWaypoint = null, currentTrac
     // health. Emit it inside the live trace so agent-pick reliability is real.
     logEvent('pick.rejected', { agent: 'pick', id: object?.id ?? null, candidates: extras.seen.size, steps, toolCalls });
     // Recover from `seen` rather than throwing straight to the stateless pool
-    // fallback: every candidate in `seen` already passed this run's mood/
-    // genre/exemplar gating (picker-tools.ts), so picking ANY of them keeps
-    // show adherence intact. Throwing here discarded that whole gated pool on
-    // a model slip and, worse, counted as an agent failure — three in a row
+    // fallback: most candidates in `seen` passed this run's mood/genre/
+    // exemplar gating (picker-tools.ts), so picking one keeps show adherence
+    // intact far more often than the old behaviour (discarding the whole
+    // gated pool and counting this as an agent failure — three in a row
     // disables the agent for 10 min, falling back to music/picker.js, which
-    // has no exemplar awareness at all. Only throw (preserving the existing
+    // has no exemplar awareness at all). Only throw (preserving the existing
     // failure-streak/breaker behaviour) when there's truly nothing to recover.
-    const candidates = [...extras.seen.values()];
+    // Prefer candidates the gate actually admitted over ones picker-tools.ts's
+    // collectPreferGated only let through because the strict pass came back
+    // empty (_exemplarGateBypassed) — both are real candidates, but only the
+    // first group is unconditionally on-brief.
+    const all = [...extras.seen.values()];
+    const onBrief = all.filter((s: any) => !s._exemplarGateBypassed);
+    const candidates = onBrief.length ? onBrief : all;
     if (!candidates.length) throw new Error(`agent returned unknown id ${object?.id}`);
     song = candidates[Math.floor(Math.random() * candidates.length)];
     pickSource = 'agent-fallback';
+    fallbackReason = 'fallback (agent referenced an unrecognized track)';
   }
 
-  const rawSay = typeof object.say === 'string' ? object.say.trim() : '';
+  const rawSay = fallbackReason ? '' : (typeof object.say === 'string' ? object.say.trim() : '');
   // Talk-within-the-intro (feature 3a): in DJ mode, hard-trim the link to the
   // pick's measured intro runway so the DJ lands before the vocals instead of
   // talking over them. No-op when the pick is un-analysed or not in DJ mode.
@@ -421,10 +436,10 @@ async function pickViaAgent(queue, { wantLink, audioWaypoint = null, currentTrac
   const say = (djMode && rawSay) ? dj.enforceIntroBudget(rawSay, introMsOf(song)) : rawSay;
   // Attach the link to the pick so it airs as the pick starts (back-announcing
   // the track on-air now), instead of immediately over that on-air track (#189).
-  await enqueuePick(queue, song, object.reason, pickSource, (wantLink && say) ? say : null);
+  await enqueuePick(queue, song, fallbackReason || object.reason, pickSource, (wantLink && say) ? say : null);
   session.appendTurn({
     role: 'dj', kind: 'pick',
-    text: object.reason || `Selected "${song.title}".`,
+    text: fallbackReason || object.reason || `Selected "${song.title}".`,
     meta: {
       trackId: song.id, title: song.title, artist: song.artist,
       steps, toolCalls, say: say || null,

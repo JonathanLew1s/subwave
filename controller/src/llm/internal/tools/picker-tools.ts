@@ -238,10 +238,17 @@ export function buildPickerTools({
   // zeroes the whole result even with an on-palette seed. This is the
   // middle ground: stay on-brief whenever ANY real neighbour matches: only
   // widen the net when the strict pass would otherwise return nothing.
+  // The widened (ungated) pass can admit candidates the exemplar palette
+  // would otherwise reject — flagged so a caller resolving an id back to a
+  // full track (dj-agent.ts's hallucinated-id recovery) can tell a genuinely
+  // on-brief `seen` entry from one that's only there because the strict pass
+  // came back empty, instead of treating every entry as equally on-brief.
   const collectPreferGated = (list: any, cap = 10) => {
     const gated = collect(list, cap, { applyExemplarGate: true });
     if (gated.length > 0) return gated;
-    return collect(list, cap, { applyExemplarGate: false });
+    const widened = collect(list, cap, { applyExemplarGate: false });
+    for (const s of widened) s._exemplarGateBypassed = true;
+    return widened;
   };
 
   const tools = {
