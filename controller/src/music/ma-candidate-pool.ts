@@ -137,9 +137,26 @@ export async function buildMaShortlist(args: BuildShortlistArgs): Promise<Shortl
   // --- Flow slots ------------------------------------------------------------
   if (currentTrack?.id && config.flowSlots > 0) {
     const flowCandidatesRaw = await library.tracksLikeThis(String(currentTrack.id), 20);
-    const flowCandidates = filterPickerCandidates(dedupeById(flowCandidatesRaw), {
+    const flowCandidatesAll = filterPickerCandidates(dedupeById(flowCandidatesRaw), {
       recentIds, recentArtists, justPlayedArtists, cap: Infinity,
     });
+    // Prefer on-palette neighbours, same trade-off picker-tools.ts's
+    // collectPreferGated settled on for the agent's own tracksLikeThis tool
+    // call: this is a raw similarity/CLAP search across the WHOLE library
+    // with no mood/genre pre-scoping (unlike moodPool above, which IS
+    // gated), so real neighbours routinely carry a different literal genre
+    // tag than the seed even when texturally on-brief — a flat hard gate
+    // zeroed nearly everything in testing. Confirmed live this exact slot
+    // was the unguarded path letting off-palette tracks (Cream/Blues,
+    // Traveling Wilburys/Roots Rock, Big Star/Power Pop) into a First Light
+    // (Indie/Alt Rock palette) brief pool and shortlist as ordinary, clean
+    // picks — moodPool's gate covers theme/discovery but never touched flow.
+    const flowCandidates = exemplarProfile
+      ? (() => {
+          const gated = gateByExemplarProfile(flowCandidatesAll, exemplarProfile).eligible;
+          return gated.length ? gated : flowCandidatesAll;
+        })()
+      : flowCandidatesAll;
     const flowRanked = flowCandidates
       .filter((t) => !usedIds.has(t.id))
       .map((t) => ({ track: t, score: flowFit(t, currentTrack) }))
