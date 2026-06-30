@@ -720,6 +720,39 @@ class Queue {
     return this.recentlyPlayed(hours).ids;
   }
 
+  // The last `n` DISTINCT tracks played — the count-based HARD no-repeat guard
+  // (filterPickerCandidates hardRecent*; never relaxed by the cascade, unlike
+  // the time-window recentlyPlayed() above). Walks the rolling sidecar
+  // newest-first and stops once it has seen `n` distinct tracks, so a busy or
+  // a quiet hour blocks the same number of songs. Counts DISTINCT tracks, not
+  // raw rows: the sidecar can hold more than one entry for a play (the boot
+  // events backfill logs an id-less copy keyed by title|artist alongside a
+  // later id'd row), and those collapse here via the shared title|artist key
+  // so `n` means n songs, not n rows. Returns BOTH ids and keys so a candidate
+  // is blocked by whichever identifier it carries; the current track is added
+  // on top so a mid-song pick can't re-pick it. Empty sets when n <= 0.
+  recentlyPlayedByCount(n = 0): { ids: Set<string>; keys: Set<string> } {
+    const ids = new Set<string>();
+    const keys = new Set<string>();
+    if (!Number.isFinite(n) || n <= 0) return { ids, keys };
+    const keyOf = (title: string | null | undefined, artist: string | null | undefined) =>
+      `${(title || '').toLowerCase().trim()}|${(artist || '').toLowerCase().trim()}`;
+    const cur = this.current?.track;
+    if (cur?.id) ids.add(cur.id);
+    if (cur?.title) keys.add(keyOf(cur.title, cur.artist));
+    const seenKeys = new Set<string>();
+    let distinct = 0;
+    for (const p of this._recentPlays) {
+      if (distinct >= n) break;
+      const k = keyOf(p.title, p.artist);
+      if (k && seenKeys.has(k)) continue; // duplicate sidecar row for the same play
+      distinct++;
+      if (p.id) ids.add(p.id);
+      if (k) { seenKeys.add(k); keys.add(k); }
+    }
+    return { ids, keys };
+  }
+
   // Lowercased artist names heard in the last `hours` hours — used by the
   // picker to block recently-heard artists. 2h is a sane default; raising it
   // narrows the pool fast on a small library.

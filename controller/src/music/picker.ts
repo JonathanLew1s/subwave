@@ -12,7 +12,7 @@ import * as dj from '../llm/dj.js';
 import * as settings from '../settings.js';
 import { isRadioPickable } from '../llm/tools.js';
 import { bpmCompat, keyCompat } from './mix.js';
-import { filterPickerCandidates, recencyWindowsForLibrary, artistKey, coreArtistKey, genreMatches } from './recency.js';
+import { filterPickerCandidates, recencyWindowsForLibrary, effectiveNoRepeatWindow, artistKey, coreArtistKey, genreMatches } from './recency.js';
 
 const CANDIDATE_CAP = 18;
 const HISTORY_DEPTH = 4;
@@ -176,7 +176,7 @@ async function tracksFromAlbums(albums: any[], perAlbum: number, max: number) {
 // source (1d) on the journey's destination vector instead of the current track.
 // `showFilter`, when set, narrows discovery sources per the show-genre soft
 // lean (see hasMusicFilter/nz below) so a pinned genre/decade actually shows up.
-export async function buildCandidates(mood: string | null | undefined, recentIds: Set<string>, recentArtists: Set<string>, currentTrack: any, rankTarget: { bpm: number | null; key: string | null } | null = null, justPlayedArtists: Set<string> = new Set(), poolSize: number = CANDIDATE_CAP, preferPopularity: boolean = false, audioWaypoint: number[] | null = null, showFilter: ShowFilter = null) {
+export async function buildCandidates(mood: string | null | undefined, recentIds: Set<string>, recentArtists: Set<string>, currentTrack: any, rankTarget: { bpm: number | null; key: string | null } | null = null, justPlayedArtists: Set<string> = new Set(), poolSize: number = CANDIDATE_CAP, preferPopularity: boolean = false, audioWaypoint: number[] | null = null, showFilter: ShowFilter = null, hardRecentIds: Set<string> = new Set(), hardRecentKeys: Set<string> = new Set()) {
   await library.load();
   const scale = poolSize / CANDIDATE_CAP;
   const scaledCap = (n: number) => Math.max(1, Math.round(n * scale));
@@ -390,6 +390,8 @@ export async function buildCandidates(mood: string | null | undefined, recentIds
     recentIds,
     recentArtists,
     justPlayedArtists,
+    hardRecentIds,
+    hardRecentKeys,
     artistCounts: perArtist,
     maxPerArtist: MAX_PER_ARTIST,
     cap: poolSize,
@@ -445,13 +447,19 @@ export async function pickViaPool(queue, ctx, rankTarget: { bpm: number | null; 
   const currentTrack = queue.current?.track || null;
   const recentTrackIds = queue.recentlyPlayedIds(24);
   const recentSimilarity = library.recentPicksSimilarity(recentTrackIds, 4);
+  // Count-based HARD no-repeat guard (live-repeats fix): the last N distinct
+  // plays can't re-air, surviving the relaxation cascade that recentIds above
+  // is subject to. Clamped to library size so a small catalogue never fully
+  // blocks. 100 is a sane fixed default for now — not yet operator-tunable.
+  const effN = effectiveNoRepeatWindow(100, library.stats().total);
+  const { ids: hardRecentIds, keys: hardRecentKeys } = queue.recentlyPlayedByCount(effN);
   // Resolve the active show once: its music-steering filters shape the pool
   // (below) and its brief steers the LLM pick (further down).
   const activeShow = settings.resolveActiveShow();
   const showFilter: ShowFilter = activeShow
     ? { genre: activeShow.genre, fromYear: activeShow.fromYear, toYear: activeShow.toYear, energy: activeShow.energy }
     : null;
-  const { candidates: rawCandidates, sources } = await buildCandidates(ctx.dominantMood, recentIds, recentArtists, currentTrack, rankTarget, justPlayedArtists, CANDIDATE_CAP, false, audioWaypoint, showFilter);
+  const { candidates: rawCandidates, sources } = await buildCandidates(ctx.dominantMood, recentIds, recentArtists, currentTrack, rankTarget, justPlayedArtists, CANDIDATE_CAP, false, audioWaypoint, showFilter, hardRecentIds, hardRecentKeys);
 
   // Apply picker constraints from settings — duration cap and exclude patterns.
   // Per-show overrides apply here: a live-sets show can set excludePatterns=[]

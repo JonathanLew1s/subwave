@@ -4,6 +4,16 @@ const DIVERSE_LIBRARY_ARTISTS = 48;
 const MIN_TRACK_RECENCY_HOURS = 1;
 const MIN_ARTIST_RECENCY_HOURS = 0.25;
 
+// Count-based hard no-repeat guard tuning (effectiveNoRepeatWindow below).
+// Never hard-block more than this fraction of the tagged library, so even a
+// configured window larger than the catalogue can support still leaves a fresh
+// pool to pick from. And below MIN_EFFECTIVE distinct tracks the guard is both
+// too weak to matter and too likely to starve a tiny library — so it switches
+// off entirely and the relaxable time-window guard (recentIds/recentKeys)
+// carries on alone. Ported from upstream's #638 live-repeats fix.
+const NO_REPEAT_MAX_LIBRARY_FRACTION = 0.375;
+const NO_REPEAT_MIN_EFFECTIVE = 15;
+
 export interface RecencyWindows {
   trackHours: number;
   artistHours: number;
@@ -20,6 +30,15 @@ export interface CandidateFilterState {
   recentKeys?: Set<string>;
   recentArtists?: Set<string>;
   justPlayedArtists?: Set<string>;
+  // Count-based hard no-repeat guard (live-repeats fix, ported from upstream
+  // #638). Checked unconditionally in every relaxation mode below — like
+  // justPlayedArtists, a track in here is never an acceptable pick, so it
+  // survives every starvation stage. This is what guarantees the last N
+  // distinct plays can't re-air even when the relaxable recentIds/recentKeys
+  // guard has been dropped to keep the pool from emptying. Populated from
+  // queue.recentlyPlayedByCount(effectiveNoRepeatWindow(...)); empty = off.
+  hardRecentIds?: Set<string>;
+  hardRecentKeys?: Set<string>;
   seenIds?: Set<string>;
   artistCounts?: Map<string, number>;
   maxPerArtist?: number;
@@ -96,6 +115,24 @@ export function recencyWindowsForLibrary(distinctArtists: number | null | undefi
   };
 }
 
+// Clamp a configured count-based no-repeat window to what the tagged library
+// can safely support. Pure + unit-pinned (scripts/picker-recency-regression.ts).
+//   - configuredN <= 0, or an unknown/empty library  → 0 (guard self-disables)
+//   - never block more than NO_REPEAT_MAX_LIBRARY_FRACTION of the library
+//   - if the result would be below NO_REPEAT_MIN_EFFECTIVE              → 0
+// Examples: (100,1000)→100, (100,40)→15, (100,20)→0, (0,*)→0, (100,null)→0.
+export function effectiveNoRepeatWindow(
+  configuredN: number | null | undefined,
+  libraryTotal: number | null | undefined,
+): number {
+  const n = Math.floor(Number(configuredN) || 0);
+  const total = Math.floor(Number(libraryTotal) || 0);
+  if (n <= 0 || total <= 0) return 0;
+  const ceiling = Math.floor(total * NO_REPEAT_MAX_LIBRARY_FRACTION);
+  const eff = Math.min(n, ceiling);
+  return eff < NO_REPEAT_MIN_EFFECTIVE ? 0 : eff;
+}
+
 export function filterPickerCandidates<T extends CandidateLike>(
   list: T[],
   {
@@ -103,6 +140,8 @@ export function filterPickerCandidates<T extends CandidateLike>(
     recentKeys = new Set<string>(),
     recentArtists = new Set<string>(),
     justPlayedArtists = new Set<string>(),
+    hardRecentIds = new Set<string>(),
+    hardRecentKeys = new Set<string>(),
     seenIds = new Set<string>(),
     artistCounts = new Map<string, number>(),
     maxPerArtist = Infinity,
@@ -125,6 +164,20 @@ export function filterPickerCandidates<T extends CandidateLike>(
         (key && justPlayedArtists.has(key)) ||
         (coreKey && coreKey !== key && justPlayedArtists.has(coreKey))
       );
+    });
+  }
+
+  // Count-based hard no-repeat guard — same unconditional-floor treatment as
+  // justPlayedArtists above: filtered out of the candidate list up front, so
+  // it survives every mode in the cascade below rather than being subject to
+  // relaxation. effectiveNoRepeatWindow() already keeps the configured count
+  // well under the library size, so this can't starve the pool to nothing.
+  if (hardRecentIds.size || hardRecentKeys.size) {
+    candidates = candidates.filter((song) => {
+      if (!song?.id) return true;
+      if (hardRecentIds.has(song.id)) return false;
+      if (hardRecentKeys.has(trackKey(song))) return false;
+      return true;
     });
   }
 

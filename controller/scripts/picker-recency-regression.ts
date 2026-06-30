@@ -5,6 +5,7 @@ import {
   coreArtistKey,
   filterPickerCandidates,
   recencyWindowsForLibrary,
+  effectiveNoRepeatWindow,
 } from '../src/music/recency.js';
 import { buildSequencedPlaylist } from '../src/music/pool.js';
 import { pickFallback } from '../src/music/picker.js';
@@ -73,8 +74,15 @@ const collabSongs = [
 // recentArtistsSince() now adds both the exact credit string and its core
 // form for the just-played track, so a "Prince and The Revolution" play
 // should block a follow-up "Prince" candidate via the shared core key.
+// relaxArtists:false isolates the collab-key matching itself from the
+// separate (and separately tested, see relaxArtistsOn below) cap-driven
+// relaxation cascade — without it, a cap larger than what mode 1 alone can
+// fill (here, the 1 surviving candidate vs. cap:5) legitimately falls through
+// to the no-guards-at-all mode and re-admits both "Prince" credits, which
+// would make this assertion fail for a reason unrelated to what it's testing.
 const collabBlocked = filterPickerCandidates(collabSongs, {
   recentArtists: new Set(['prince and the revolution', 'prince']),
+  relaxArtists: false,
   cap: 5,
 });
 assert.deepEqual(
@@ -220,6 +228,43 @@ assert.equal(
   pickFallback(fallbackCandidates, new Set()).id,
   'fb-1',
   'expected pickFallback to return candidates[0] when justPlayedArtists is empty',
+);
+
+// --- effectiveNoRepeatWindow (count-based hard no-repeat guard clamp) ------
+assert.equal(effectiveNoRepeatWindow(100, 1000), 100, 'expected configured window to pass through for a large library');
+assert.equal(effectiveNoRepeatWindow(100, 40), 15, 'expected window to clamp to the 37.5%-of-library ceiling');
+assert.equal(effectiveNoRepeatWindow(100, 20), 0, 'expected a clamped window below the effective-minimum to disable the guard');
+assert.equal(effectiveNoRepeatWindow(0, 1000), 0, 'expected configuredN <= 0 to disable the guard');
+assert.equal(effectiveNoRepeatWindow(100, null), 0, 'expected an unknown/empty library to disable the guard');
+
+// --- hardRecentIds/hardRecentKeys (live-repeats fix) ------------------------
+// A track in the hard guard must never re-air, even when every other guard in
+// the cascade has been relaxed to avoid an empty result.
+const hardGuardSongs = [
+  { id: 'hr-1', title: 'Hard Blocked', artist: 'Solo Artist' },
+  { id: 'hr-2', title: 'Still Available', artist: 'Solo Artist' },
+];
+const hardGuarded = filterPickerCandidates(hardGuardSongs, {
+  recentArtists: new Set(['solo artist']),
+  hardRecentIds: new Set(['hr-1']),
+  cap: 5,
+});
+assert.deepEqual(
+  hardGuarded.map((song) => song.id),
+  ['hr-2'],
+  'expected hardRecentIds to block a track through every relaxation mode, unlike the relaxable recentArtists guard',
+);
+
+// hardRecentKeys must also block id-less (events-backfill) candidates by
+// title|artist, the same way recentKeys does for the relaxable guard.
+const hardGuardedByKey = filterPickerCandidates(hardGuardSongs, {
+  hardRecentKeys: new Set(['hard blocked|solo artist']),
+  cap: 5,
+});
+assert.deepEqual(
+  hardGuardedByKey.map((song) => song.id),
+  ['hr-2'],
+  'expected hardRecentKeys to block a track by title|artist key',
 );
 
 console.log('picker-recency regression checks passed');
