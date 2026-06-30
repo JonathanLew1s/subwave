@@ -117,6 +117,8 @@ export function buildPickerTools({
   recentKeys = new Set<string>(),
   recentArtists = new Set<string>(),
   justPlayedArtists = new Set<string>(),
+  hardRecentIds = new Set<string>(),
+  hardRecentKeys = new Set<string>(),
   maxDurationSec = 600,
   minDurationSec = 0,
   excludePatterns = [] as string[],
@@ -130,6 +132,10 @@ export function buildPickerTools({
   recentKeys?: Set<string>;        // lowercased "title|artist" — backfilled entries lack ids
   recentArtists?: Set<string>;
   justPlayedArtists?: Set<string>; // core artist key(s) of the current/previous track — never relaxed
+  // Count-based hard no-repeat guard (live-repeats fix) — see recency.ts's
+  // effectiveNoRepeatWindow(). Empty sets = guard off (today's behaviour).
+  hardRecentIds?: Set<string>;
+  hardRecentKeys?: Set<string>;
   maxDurationSec?: number;
   // Floor on track length — catches non-music bonus tracks (spoken liner-note
   // commentary, interview snippets) that a duration ceiling alone can't,
@@ -194,6 +200,8 @@ export function buildPickerTools({
       recentKeys,
       recentArtists,
       justPlayedArtists,
+      hardRecentIds,
+      hardRecentKeys,
       seenIds: new Set(seen.keys()),
       artistCounts,
       maxPerArtist: MAX_PER_ARTIST,

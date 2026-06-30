@@ -24,7 +24,7 @@ import { defineAgent } from '../llm/agent.js';
 import { buildPickerTools } from '../llm/tools.js';
 import { recordPick } from '../llm/log.js';
 import { withTrace, logEvent } from '../observability/events.js';
-import { recencyWindowsForLibrary } from '../music/recency.js';
+import { recencyWindowsForLibrary, effectiveNoRepeatWindow } from '../music/recency.js';
 import { buildBriefPoolForShow, filterToolsForShow, maybeRunPickerShadow, resolveExemplarProfile } from './dj-agent-mod.js';
 
 // --- Feature 4: DJ-mode mini-runs ------------------------------------------
@@ -292,7 +292,7 @@ export const pickerAgent = defineAgent({
   maxSteps: 4,
   timeoutMs: agentDeadline,
   buildSystem: () => pickSystem(),
-  buildTools: async ({ recentIds, recentKeys, recentArtists, justPlayedArtists, audioWaypoint, currentTrack }) => {
+  buildTools: async ({ recentIds, recentKeys, recentArtists, justPlayedArtists, hardRecentIds, hardRecentKeys, audioWaypoint, currentTrack }) => {
     const activeShow = settings.resolveActiveShow();
     const { maxDurationSec, minDurationSec, excludePatterns } = settings.getPickerConfig(activeShow);
     // Gated on moods.length, matching buildBriefPoolForShow's own check below
@@ -301,7 +301,7 @@ export const pickerAgent = defineAgent({
     // Passed into buildBriefPoolForShow so it's resolved once, not twice.
     const exemplarProfile = activeShow?.moods?.length ? await resolveExemplarProfile(activeShow) : null;
     const briefPool = await buildBriefPoolForShow(activeShow, recentIds, recentArtists, justPlayedArtists, currentTrack, exemplarProfile);
-    const { tools, seen } = buildPickerTools({ recentIds, recentKeys, recentArtists, justPlayedArtists, maxDurationSec, minDurationSec, excludePatterns, genreFilter: activeShow?.genre || null, exemplarProfile, briefPool, audioWaypoint });
+    const { tools, seen } = buildPickerTools({ recentIds, recentKeys, recentArtists, justPlayedArtists, hardRecentIds, hardRecentKeys, maxDurationSec, minDurationSec, excludePatterns, genreFilter: activeShow?.genre || null, exemplarProfile, briefPool, audioWaypoint });
     return { tools: filterToolsForShow(tools, activeShow), extras: { seen } };
   },
 });
@@ -373,12 +373,22 @@ async function pickViaAgent(queue, { wantLink, audioWaypoint = null, currentTrac
   const recentArtists = queue.recentArtistsSince(windows.artistHours);
   const justPlayedArtists = queue.justPlayedArtistKeys();
 
+  // Count-based HARD no-repeat guard (live-repeats fix): the last N distinct
+  // plays can't re-air, surviving the relaxation cascade that recentIds above
+  // is subject to. Clamped to library size so a small catalogue never fully
+  // blocks. 100 is a sane fixed default for now — not yet operator-tunable
+  // via settings (no settings.llm.noRepeatWindow field on this branch).
+  const effN = effectiveNoRepeatWindow(100, library.stats().total);
+  const { ids: hardRecentIds, keys: hardRecentKeys } = queue.recentlyPlayedByCount(effN);
+
   const { object, steps, toolCalls, extras } = await pickerAgent.run({
     messages: session.windowMessages(),
     recentIds,
     recentKeys,
     recentArtists,
     justPlayedArtists,
+    hardRecentIds,
+    hardRecentKeys,
     // Sonic journey (Phase 2): registers the tracksTowardJourney tool, closed
     // over the run's current waypoint, so the agent path drifts the sound the
     // same way the pool path does. The event text tells the agent to use it.
