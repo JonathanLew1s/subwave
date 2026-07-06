@@ -28,8 +28,7 @@ docker compose up -d                     # docker-compose.yml (bundled Caddy pro
 docker compose -f docker-compose.byo.yml up -d     # prod, BYO reverse proxy (Traefik/nginx/Caddy)
 
 # --- dev (Mac smoke test, requires git clone) ---
-docker compose -f docker-compose.dev.yml up -d     # Broadcast (icecast2+liquidsoap) + Controller (tsx watch)
-cd web && npm install && npm run dev               # web UI on :7700, separate process
+docker compose -f docker-compose.dev.yml up -d     # Broadcast + Controller (tsx watch) + Web UI (next dev :7700)
 
 docker compose logs -f controller        # prod default
 curl http://localhost:7700/api/health    # liveness via Caddy edge (prod)

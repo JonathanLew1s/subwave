@@ -1,6 +1,6 @@
 # SUB/WAVE — dev compose (local smoke test).
-# Runs: Broadcast (icecast2 + liquidsoap) + Controller. The Next.js listener
-# UI runs separately via `cd web && npm run dev` so JSX changes hot-reload.
+# Runs: Broadcast + Controller + Web UI. All three hot-reload from bind-mounted
+# source — no image rebuild needed for code changes.
 #
 # State + sounds + radio.liq are bind-mounted from the repo so dev cycles
 # don't need image rebuilds. The prod composes bake them into images instead.
@@ -115,6 +115,37 @@ services:
       # Set MUSIC_DIR in your .env and uncomment. Dev: point at your local music
       # library. Both controller and broadcast must mount at the same path.
       # - ${MUSIC_DIR}:/music:ro
+
+  # -------------------------------------------------------------------------
+  # WEB — Next.js listener UI
+  # -------------------------------------------------------------------------
+  # Runs `next dev` for hot reload. node_modules are baked into the image
+  # (web/Dockerfile.dev); the full web/ tree is bind-mounted over them, but
+  # an anonymous volume at /app/node_modules preserves the image's install.
+  # SITE_URL and NEXT_PUBLIC_GA_ID are omitted — static metadata routes are
+  # skipped in dev and analytics are not needed locally.
+  web:
+    build:
+      context: .
+      dockerfile: web/Dockerfile.dev
+    container_name: sub-wave-web
+    restart: unless-stopped
+    depends_on:
+      - controller
+    ports:
+      - "7700:7700"
+    environment:
+      - NODE_ENV=development
+      - SUBWAVE_HOMEPAGE=${SUBWAVE_HOMEPAGE:-player}
+      # Server-side base URL for generateMetadata on the force-dynamic homepage.
+      - CONTROLLER_INTERNAL_URL=http://controller:7701
+    volumes:
+      # Bind-mount entire web/ for hot reload. The anonymous volume below
+      # keeps the image's node_modules intact — same principle as the
+      # selective mounts on controller (avoids shadowing /app/node_modules).
+      - ./web:/app
+      - /app/node_modules
+      - /app/.next
 
   # -------------------------------------------------------------------------
   # TTS-HEAVY (optional) — sidecar for Chatterbox + PocketTTS
