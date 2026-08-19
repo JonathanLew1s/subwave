@@ -15,7 +15,7 @@ import * as requestLog from '../broadcast/request-log.js';
 import * as listeners from '../broadcast/listeners.js';
 import * as webhooks from '../broadcast/webhooks.js';
 import {
-  checkRateLimit, clientIp,
+  checkRateLimit, commitRateLimit, checkGlobalRateLimit, commitGlobalRateLimit, clientIp,
   REQUESTS_DISABLED, REQUEST_TEXT_MAX, REQUEST_NAME_MAX,
 } from '../middleware/ratelimit.js';
 
@@ -590,7 +590,8 @@ router.post('/request', async (req, res) => {
   }
   const requester = (rawName.trim().slice(0, REQUEST_NAME_MAX)) || 'anon';
 
-  const gate = checkRateLimit(clientIp(req));
+  const ip = clientIp(req);
+  const gate = checkRateLimit(ip);
   if (!gate.ok) {
     res.setHeader('Retry-After', String(gate.retryAfter));
     return res.status(429).json({
@@ -599,6 +600,21 @@ router.post('/request', async (req, res) => {
       retryAfter: gate.retryAfter,
     });
   }
+  // Station-wide ceiling — checked after the per-IP cooldown (which is always
+  // spent) but before either hourly budget is committed, so a raid across many
+  // IPs still closes the request line without punishing any single listener's
+  // per-IP budget for it.
+  const globalGate = checkGlobalRateLimit();
+  if (!globalGate.ok) {
+    res.setHeader('Retry-After', String(globalGate.retryAfter));
+    return res.status(429).json({
+      success: false,
+      message: `Requests are busy right now — try again in ${globalGate.retryAfter}s.`,
+      retryAfter: globalGate.retryAfter,
+    });
+  }
+  commitRateLimit(ip);
+  commitGlobalRateLimit();
 
   pruneRequests();
   const id = randomUUID();
