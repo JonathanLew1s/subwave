@@ -5,6 +5,7 @@ import { config } from './config.js';
 import { resolveActiveShow } from './settings.js';
 import { getListenerCount } from './broadcast/listeners.js';
 import { zonedParts, zonedISODate } from './time.js';
+import { fetchWithTimeout } from './util/fetch.js';
 
 export function getTimeContext(date = new Date()) {
   const h = zonedParts(date).hour;
@@ -68,7 +69,7 @@ export async function getWeather() {
   try {
     const unitParam = imperial ? '&temperature_unit=fahrenheit' : '';
     const url = `https://api.open-meteo.com/v1/forecast?latitude=${config.weather.lat}&longitude=${config.weather.lng}&current=temperature_2m,weather_code,is_day${unitParam}`;
-    const res = await fetch(url);
+    const res = await fetchWithTimeout(url, {}, 10_000);
     const data = await res.json() as any;
     const code = data.current.weather_code;
     const condition = mapWeatherCode(code);

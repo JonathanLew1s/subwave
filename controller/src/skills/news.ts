@@ -11,6 +11,7 @@
 // if a richer feed is needed.
 
 import { config } from '../config.js';
+import { fetchWithTimeout } from '../util/fetch.js';
 
 const ITEM_RE = /<item\b[^>]*>([\s\S]*?)<\/item>/gi;
 const TITLE_RE = /<title>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/i;
@@ -37,7 +38,7 @@ export function hashHeadline(title) {
 export async function fetchHeadlines({ feedUrl, maxItems }: { feedUrl?: string; maxItems?: number } = {}) {
   const url = feedUrl || config.news.feedUrl;
   const cap = maxItems || config.news.maxItems;
-  const res = await fetch(url);
+  const res = await fetchWithTimeout(url, {}, 15_000);
   if (!res.ok) throw new Error(`News feed HTTP ${res.status}`);
   const xml = await res.text();
   const items: any[] = [];
