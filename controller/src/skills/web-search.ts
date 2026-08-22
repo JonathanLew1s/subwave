@@ -18,6 +18,7 @@
 
 import { config } from '../config.js';
 import * as settings from '../settings.js';
+import { fetchWithTimeout } from '../util/fetch.js';
 
 const TAVILY_ENDPOINT = 'https://api.tavily.com/search';
 const DDG_ENDPOINT = 'https://api.duckduckgo.com/';
@@ -45,7 +46,7 @@ async function memo(
 
 export async function tavilySearch(query: string): Promise<SearchResponse> {
   const apiKey = settings.get().search?.apiKey || config.search.apiKey;
-  const res = await fetch(TAVILY_ENDPOINT, {
+  const res = await fetchWithTimeout(TAVILY_ENDPOINT, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -58,7 +59,7 @@ export async function tavilySearch(query: string): Promise<SearchResponse> {
       include_answer: true,
       max_results: 5,
     }),
-  });
+  }, 30_000);
   if (!res.ok) throw new Error(`Tavily HTTP ${res.status}`);
   const data: any = await res.json();
   return {
@@ -88,11 +89,11 @@ export async function duckduckgoSearch(query: string): Promise<SearchResponse> {
   url.searchParams.set('no_html', '1');
   url.searchParams.set('skip_disambig', '1');
   url.searchParams.set('no_redirect', '1');
-  const res = await fetch(url, {
+  const res = await fetchWithTimeout(url, {
     headers: {
       'User-Agent': 'SUB-WAVE radio controller (https://github.com/perminder-klair/subwave)',
     },
-  });
+  }, 30_000);
   if (!res.ok) throw new Error(`DuckDuckGo HTTP ${res.status}`);
   const data: any = await res.json();
   const answer = String(data.AbstractText || data.Abstract || '').trim();

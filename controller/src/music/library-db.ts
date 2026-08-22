@@ -1195,15 +1195,24 @@ export function filter(opts: FilterOpts = {}): { total: number; rows: TrackRecor
     `(SELECT AVG(json_extract(je.value,'$.value')) FROM json_each(tracks.pace_json) je)`;
   // Acoustic sorts surface analysed tracks first (NULLs sink to the bottom) and
   // tie-break by artist for a stable order across un-analysed rows.
-  const orderSql = ({
-    artist: `ORDER BY LOWER(COALESCE(artist,'')) , LOWER(COALESCE(album,'')) , LOWER(COALESCE(title,''))`,
+  const DEFAULT_ORDER_SQL = `ORDER BY LOWER(COALESCE(artist,'')) , LOWER(COALESCE(album,'')) , LOWER(COALESCE(title,''))`;
+  // `sort` is a route param cast to a string union with no runtime check
+  // (routes/library.ts), so it can be any string. Built on Object.create(null)
+  // so a value like `sort=constructor`/`__proto__`/`toString` can only miss —
+  // a plain object literal resolves those to inherited Object.prototype values
+  // (truthy), which would skip the `??` fallback below and interpolate a
+  // stringified function into the query instead of falling through to the
+  // default order.
+  const ORDER_SQL: Record<string, string> = Object.assign(Object.create(null), {
+    artist: DEFAULT_ORDER_SQL,
     title: `ORDER BY LOWER(COALESCE(title,'')) , LOWER(COALESCE(artist,''))`,
     year: `ORDER BY year DESC, LOWER(COALESCE(artist,''))`,
     taggedAt: 'ORDER BY tagged_at DESC',
     bpm: `ORDER BY (bpm IS NULL), bpm ASC, LOWER(COALESCE(artist,''))`,
     loudness: `ORDER BY (loudness_lufs IS NULL), loudness_lufs DESC, LOWER(COALESCE(artist,''))`,
     pace: `ORDER BY (${PACE_MEAN_SQL}) IS NULL, (${PACE_MEAN_SQL}) DESC, LOWER(COALESCE(artist,''))`,
-  } as Record<string, string>)[sort] ?? `ORDER BY LOWER(COALESCE(artist,'')) , LOWER(COALESCE(album,'')) , LOWER(COALESCE(title,''))`;
+  });
+  const orderSql = ORDER_SQL[sort] ?? DEFAULT_ORDER_SQL;
 
   const d = requireDb();
   const total = (

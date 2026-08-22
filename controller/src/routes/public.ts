@@ -19,6 +19,18 @@ import { lifetimeTokenCount } from '../llm/log.js';
 
 export const router = express.Router();
 
+// Terminal-error responder for the unauthenticated handlers below. err.message
+// can surface internals a listener doesn't need (a failed settings.load() can
+// leak state-dir paths, a Subsonic/context failure the origin hostname) — low
+// value recon, but nothing to hand out for free on a public endpoint. Also
+// makes sure the failure is actually logged server-side: several of these
+// handlers had no log line at all, so genericising the response without this
+// would have made the 500 silent.
+function publicError(res, label: string, err: unknown) {
+  console.error(`[public] ${label} failed:`, err instanceof Error ? err.message : err);
+  res.status(500).json({ error: 'internal error' });
+}
+
 // 1×1 transparent PNG — served when a persona has no avatar so the listener
 // UI can render an <img> tag without a broken-image icon. Cheap, no shipped
 // asset required.
@@ -224,7 +236,7 @@ router.get('/now-playing', async (req, res) => {
       timezone: getStationTimezone(),
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    publicError(res, 'now-playing', err);
   }
 });
 
@@ -248,7 +260,7 @@ router.get('/dj', async (req, res) => {
       location: s.weather?.locationName || '',
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    publicError(res, 'dj', err);
   }
 });
 
@@ -287,7 +299,7 @@ router.get('/schedule', async (req, res) => {
       timezone: getStationTimezone(),
     });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    publicError(res, 'schedule', err);
   }
 });
 
@@ -344,7 +356,7 @@ router.get('/themes', async (req, res) => {
         : stationDefault;
     res.json({ active, themes });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    publicError(res, 'themes', err);
   }
 });
 

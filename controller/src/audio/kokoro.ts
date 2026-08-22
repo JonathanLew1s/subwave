@@ -107,6 +107,18 @@ class KokoroWorker {
     if (this.ready) return;
     if (this.readyTimer) clearTimeout(this.readyTimer);
     this.readyReject?.(err);
+    // Model load is 2-5s against a 60s ceiling, so a worker that misses
+    // READY_TIMEOUT_MS is stuck, not slow — kill it rather than leaving it
+    // running. It reads `for line in sys.stdin` with the ONNX model resident,
+    // so without this it blocks forever and Node's own stdin pipe keeps it
+    // alive; the caller's promise is already rejected and falls back to
+    // Piper regardless.
+    this.reap();
+  }
+
+  // Idempotent — safe to call whether or not the process is still alive.
+  reap() {
+    try { this.proc?.kill('SIGTERM'); } catch {}
   }
 
   onExit(code: number | null, signal: NodeJS.Signals | null) {
@@ -136,6 +148,15 @@ class KokoroWorker {
 async function ensureWorker(): Promise<KokoroWorker> {
   if (worker && worker.ready) return worker;
   if (bootingPromise) return bootingPromise;
+  // A prior boot may have failed its ready-timeout and been signalled to
+  // exit, but if it hasn't finished exiting yet `worker` still points at it
+  // (onExit, which clears the reference, hasn't run). Reap it explicitly so
+  // replacing it here below can't overwrite the handle and orphan the dying
+  // process instead of letting onExit's own cleanup reach it.
+  if (worker && !worker.ready) {
+    worker.reap();
+    worker = null;
+  }
   bootingPromise = (async () => {
     const w = new KokoroWorker();
     worker = w;
